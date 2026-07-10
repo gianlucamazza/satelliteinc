@@ -1,0 +1,82 @@
+use serde::{Deserialize, Serialize};
+
+use crate::company::ActiveContract;
+use crate::company::{ContractOffer, GameMode};
+use crate::ops::{AnomalyType, QueuedCommand};
+use crate::orbit::{KeplerElements, ReferenceSatellite};
+use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, PendingHohmann};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub sim_seconds: f64,
+    pub sim_days: f64,
+    pub time_accel: f64,
+    pub tick: u64,
+    pub company_name: String,
+    pub cash_usd: f64,
+    pub reputation: f64,
+    pub game_mode: GameMode,
+    pub unlocked_tech: Vec<String>,
+    pub unlocked_buses: Vec<String>,
+    pub marketplace: Vec<ContractOffer>,
+    pub active_contract: Option<ActiveContract>,
+    pub spacecraft: Option<SpacecraftSnapshot>,
+    pub ground_stations: Vec<StationSnapshot>,
+    pub reference_satellites: Vec<ReferenceSatellite>,
+    pub phase: GamePhase,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GamePhase {
+    Design,
+    AwaitingLaunch,
+    OnOrbit,
+    ContractComplete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpacecraftSnapshot {
+    pub name: String,
+    pub bus_id: String,
+    pub bus_name: String,
+    pub phase: CraftPhase,
+    pub position_eci_km: [f64; 3],
+    pub velocity_eci_km_s: [f64; 3],
+    pub elements: Option<KeplerElements>,
+    pub orbit_trail_km: Vec<[f64; 3]>,
+    pub power_wh: f64,
+    pub buffer_mb: f64,
+    pub downlink_active: bool,
+    pub in_sunlight: bool,
+    pub in_pass: bool,
+    pub downlink_rate_mb_s: f64,
+    pub imaging_rate_mb_s: f64,
+    pub target_altitude_km: f64,
+    pub target_inclination_deg: f64,
+    pub altitude_km: f64,
+    pub propellant_kg: f64,
+    pub delta_v_remaining_km_s: f64,
+    pub total_delta_v_used_km_s: f64,
+    pub pending_hohmann: Option<PendingHohmann>,
+    pub at_apsis: bool,
+    pub hohmann_preview: Option<HohmannPlanSnapshot>,
+    pub maneuver_target_altitude_km: f64,
+    pub payload_mode: PayloadMode,
+    pub downlink_station_id: Option<String>,
+    pub command_queue: Vec<QueuedCommand>,
+    pub active_anomaly: Option<AnomalyType>,
+    pub anomaly_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationSnapshot {
+    pub id: String,
+    pub name: String,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub elevation_deg: f64,
+    pub in_pass: bool,
+    pub bandwidth_mbps: f64,
+    pub next_pass_in_seconds: Option<f64>,
+}

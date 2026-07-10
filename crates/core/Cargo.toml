@@ -1,0 +1,23 @@
+[package]
+name = "satelliteinc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Deterministic satellite company simulator core"
+
+[lints]
+workspace = true
+
+[features]
+default = ["sgp4"]
+sgp4 = ["dep:sgp4"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sgp4 = { version = "2.4", optional = true }
+
+[dev-dependencies]
+approx = "0.5"

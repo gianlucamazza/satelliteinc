@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Satellite Inc</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="globe"></canvas>
+      <div id="loading" class="loading-overlay">
+        <div class="loading-card">
+          <h2>Satellite Inc</h2>
+          <p>Loading orbital simulation…</p>
+          <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+        </div>
+      </div>
+      <div id="onboarding" class="onboarding hidden">
+        <div class="onboarding-card">
+          <p id="onboarding-progress" class="onboarding-progress"></p>
+          <h2 id="onboarding-title"></h2>
+          <p id="onboarding-body"></p>
+          <div class="onboarding-actions">
+            <button type="button" id="onboarding-back" class="ghost">Back</button>
+            <button type="button" id="onboarding-skip" class="ghost">Skip</button>
+            <button type="button" id="onboarding-next" class="primary">Next</button>
+          </div>
+        </div>
+      </div>
+      <div id="toast" class="toast" role="status" aria-live="assertive"></div>
+      <div id="hud">
+        <header>
+          <h1>Satellite Inc</h1>
+          <p id="phase-label">Design Lab</p>
+        </header>
+        <nav id="tab-bar" class="tab-bar"></nav>
+        <section id="status-panel"></section>
+        <section id="action-panel"></section>
+        <section id="event-log" aria-label="Event log" aria-live="polite"></section>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,72 @@
+import * as THREE from "three";
+import { earthRadiusRender } from "./coords.ts";
+
+function hudClipRightPx(): number {
+  const hud = document.getElementById("hud");
+  if (hud) {
+    return hud.getBoundingClientRect().right + 12;
+  }
+  return 432;
+}
+
+/** True when the point lies on the hemisphere facing the camera. */
+export function isFacingCamera(
+  worldPos: THREE.Vector3,
+  camera: THREE.Camera,
+  minDot = 0.12,
+): boolean {
+  const normal = worldPos.clone().normalize();
+  const viewDir = camera.position.clone().normalize();
+  return normal.dot(viewDir) > minDot;
+}
+
+/** True when a ray from camera to target intersects the Earth sphere before the target. */
+export function isOccludedByEarth(
+  cameraPos: THREE.Vector3,
+  target: THREE.Vector3,
+): boolean {
+  const earthR = earthRadiusRender();
+  const dir = target.clone().sub(cameraPos);
+  const dist = dir.length();
+  if (dist < 1e-6) return false;
+  dir.divideScalar(dist);
+
+  const b = 2 * cameraPos.dot(dir);
+  const c = cameraPos.lengthSq() - earthR * earthR;
+  const disc = b * b - 4 * c;
+  if (disc < 0) return false;
+  const t = (-b - Math.sqrt(disc)) / 2;
+  return t > 0.01 && t < dist - 0.01;
+}
+
+/** Radial offset from Earth center along a surface direction. */
+export function offsetAlongNormal(
+  surfacePos: THREE.Vector3,
+  height: number,
+): THREE.Vector3 {
+  return surfacePos.clone().normalize().multiplyScalar(earthRadiusRender() + height);
+}
+
+/** Hide labels that project into the HUD column on the left. */
+export function isInHudColumn(
+  worldPos: THREE.Vector3,
+  camera: THREE.Camera,
+  width = window.innerWidth,
+): boolean {
+  const projected = worldPos.clone().project(camera);
+  const x = (projected.x * 0.5 + 0.5) * width;
+  return x < hudClipRightPx() && projected.z < 1;
+}
+
+export function shouldShowLabel(
+  worldPos: THREE.Vector3,
+  camera: THREE.Camera,
+  options: { occlude?: boolean } = {},
+): boolean {
+  if (options.occlude && isOccludedByEarth(camera.position, worldPos)) {
+    return false;
+  }
+  if (!isFacingCamera(worldPos, camera)) return false;
+  if (isInHudColumn(worldPos, camera)) return false;
+  return true;
+}

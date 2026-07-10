@@ -1,0 +1,208 @@
+{
+  "buses": [
+    {
+      "id": "cubesat",
+      "name": "CubeSat 3U",
+      "mass_kg": 4.0,
+      "solar_power_w": 8.0,
+      "battery_wh": 20.0,
+      "comms_mbps": 2.0,
+      "comms_power_w": 1.6,
+      "payload_power_w": 3.0,
+      "launch_cost_usd": 120000,
+      "propellant_kg": 0.5,
+      "isp_s": 220.0,
+      "unlocked_by_default": true
+    },
+    {
+      "id": "microsat",
+      "name": "MicroSat 50",
+      "mass_kg": 50.0,
+      "solar_power_w": 40.0,
+      "battery_wh": 150.0,
+      "comms_mbps": 10.0,
+      "comms_power_w": 8.0,
+      "payload_power_w": 12.0,
+      "launch_cost_usd": 200000,
+      "propellant_kg": 5.0,
+      "isp_s": 250.0,
+      "unlocked_by_default": true
+    },
+    {
+      "id": "smallsat",
+      "name": "SmallSat 100",
+      "mass_kg": 100.0,
+      "solar_power_w": 80.0,
+      "battery_wh": 400.0,
+      "comms_mbps": 20.0,
+      "comms_power_w": 16.0,
+      "payload_power_w": 25.0,
+      "launch_cost_usd": 280000,
+      "propellant_kg": 12.0,
+      "isp_s": 310.0,
+      "unlocked_by_default": false
+    }
+  ],
+  "ground_stations": [
+    {
+      "id": "svalbard",
+      "name": "SvalSat",
+      "latitude_deg": 78.2306,
+      "longitude_deg": 15.3911,
+      "min_elevation_deg": 5.0,
+      "bandwidth_mbps": 80.0
+    },
+    {
+      "id": "fairbanks",
+      "name": "Fairbanks",
+      "latitude_deg": 64.8378,
+      "longitude_deg": -147.7164,
+      "min_elevation_deg": 5.0,
+      "bandwidth_mbps": 60.0
+    },
+    {
+      "id": "chile",
+      "name": "Santiago",
+      "latitude_deg": -33.4489,
+      "longitude_deg": -70.6693,
+      "min_elevation_deg": 10.0,
+      "bandwidth_mbps": 40.0
+    },
+    {
+      "id": "kiruna",
+      "name": "Kiruna",
+      "latitude_deg": 67.8558,
+      "longitude_deg": 20.2253,
+      "min_elevation_deg": 5.0,
+      "bandwidth_mbps": 70.0
+    }
+  ],
+  "contracts": [
+    {
+      "id": "earth_imaging",
+      "name": "Earth Imaging — Alpha",
+      "description": "Downlink 500 MB of imagery within 7 sim-days.",
+      "downlink_mb": 500.0,
+      "deadline_days": 7.0,
+      "payout_usd": 350000,
+      "reputation_required": 0.0,
+      "reputation_reward": 8.0
+    },
+    {
+      "id": "comms_relay",
+      "name": "Comms Relay — Beta",
+      "description": "Downlink 1 GB within 10 days for relay test.",
+      "downlink_mb": 1024.0,
+      "deadline_days": 10.0,
+      "payout_usd": 520000,
+      "reputation_required": 15.0,
+      "reputation_reward": 12.0
+    },
+    {
+      "id": "science_multi",
+      "name": "Multi-pass Science",
+      "description": "Downlink 2 GB from at least 3 different ground stations within 14 days.",
+      "downlink_mb": 2048.0,
+      "deadline_days": 14.0,
+      "payout_usd": 900000,
+      "reputation_required": 30.0,
+      "reputation_reward": 20.0,
+      "min_distinct_stations": 3
+    },
+    {
+      "id": "rapid_eye",
+      "name": "Rapid Eye — Scout",
+      "description": "Fast turnaround: 300 MB in 4 days.",
+      "downlink_mb": 300.0,
+      "deadline_days": 4.0,
+      "payout_usd": 280000,
+      "reputation_required": 5.0,
+      "reputation_reward": 6.0
+    },
+    {
+      "id": "polar_watch",
+      "name": "Polar Watch",
+      "description": "High-inclination monitoring: 1.5 GB in 12 days.",
+      "downlink_mb": 1536.0,
+      "deadline_days": 12.0,
+      "payout_usd": 680000,
+      "reputation_required": 22.0,
+      "reputation_reward": 15.0
+    }
+  ],
+  "tech_tree": [
+    {
+      "id": "comms_mk2",
+      "name": "Comms Mk II",
+      "description": "Improved S-band amplifiers (+25% downlink rate).",
+      "cost_usd": 75000,
+      "requires": [],
+      "comms_multiplier": 1.25,
+      "solar_multiplier": 1.0
+    },
+    {
+      "id": "solar_mk2",
+      "name": "Solar Mk II",
+      "description": "High-efficiency triple-junction cells (+20% power).",
+      "cost_usd": 60000,
+      "requires": [],
+      "comms_multiplier": 1.0,
+      "solar_multiplier": 1.2
+    },
+    {
+      "id": "smallsat_bus",
+      "name": "SmallSat Bus License",
+      "description": "Unlock the SmallSat 100 platform.",
+      "cost_usd": 120000,
+      "requires": ["comms_mk2"],
+      "unlocks_bus": "smallsat",
+      "comms_multiplier": 1.0,
+      "solar_multiplier": 1.0
+    }
+  ],
+  "tle_catalog": [
+    {
+      "norad_id": 25544,
+      "name": "ISS (ZARYA)",
+      "line1": "1 25544U 98067A   26191.15356376  .00005628  00000+0  11035-3 0  9998",
+      "line2": "2 25544  51.6302 186.4276 0006683 277.8890  82.1339 15.48965714575314"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "campaign_start",
+      "name": "Campaign — First Contract",
+      "description": "Standard campaign: limited cash, reputation gates, one bus unlocked.",
+      "game_mode": "campaign",
+      "starting_cash": 450000,
+      "starting_reputation": 10,
+      "bus_id": "cubesat",
+      "contract_id": "earth_imaging",
+      "altitude_km": 400,
+      "inclination_deg": 97
+    },
+    {
+      "id": "sandbox_lab",
+      "name": "Sandbox Lab",
+      "description": "All buses unlocked, relaxed marketplace, extra starting cash.",
+      "game_mode": "sandbox",
+      "starting_cash": 750000,
+      "starting_reputation": 50,
+      "bus_id": "microsat",
+      "altitude_km": 500,
+      "inclination_deg": 51.6
+    },
+    {
+      "id": "ops_challenge",
+      "name": "Ops Challenge",
+      "description": "Campaign with comms relay contract pre-accepted — plan multi-station passes.",
+      "game_mode": "campaign",
+      "starting_cash": 420000,
+      "starting_reputation": 18,
+      "bus_id": "microsat",
+      "contract_id": "comms_relay",
+      "altitude_km": 450,
+      "inclination_deg": 88
+    }
+  ]
+}
