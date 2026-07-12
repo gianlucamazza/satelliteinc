@@ -69,6 +69,11 @@ pub enum PlayerAction {
     BeginTransfer {
         craft_id: CraftId,
     },
+    /// Rename a craft (player attachment is load-bearing).
+    RenameCraft {
+        craft_id: CraftId,
+        name: String,
+    },
     /// (Re)assign or unassign an active contract to a craft.
     AssignContract {
         contract_id: String,

@@ -163,6 +163,11 @@ export interface SpacecraftSnapshot {
   light_delay_seconds: number;
   /** This craft's daily ops line (company multiplier applied). */
   ops_cost_usd_per_day: number;
+  /** Service record. */
+  contracts_completed: number;
+  lifetime_revenue_usd: number;
+  lifetime_ops_usd: number;
+  launched_at_sim_seconds: number | null;
   station_status: CraftStationStatus[];
   /** Cruise in progress (null on orbit / in design). */
   transfer: TransferSnapshot | null;

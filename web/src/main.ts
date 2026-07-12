@@ -22,6 +22,8 @@ const SETTINGS_KEY = "satelliteinc_settings";
 
 interface Settings {
   autoDownlink: boolean;
+  autoPauseArrival: boolean;
+  autoPauseAnomaly: boolean;
   showTleRefs: boolean;
   showLegend: boolean;
   timeAccelBeforePause: number;
@@ -34,6 +36,8 @@ function errorText(e: unknown): string {
 function loadSettings(): Settings {
   const defaults: Settings = {
     autoDownlink: true,
+    autoPauseArrival: true,
+    autoPauseAnomaly: true,
     showTleRefs: true,
     showLegend: true,
     timeAccelBeforePause: 100,
@@ -54,6 +58,16 @@ async function main(): Promise<void> {
 
   const settings = loadSettings();
   let autoDownlink = settings.autoDownlink;
+  const autoPauseArrival = settings.autoPauseArrival;
+  const autoPauseAnomaly = settings.autoPauseAnomaly;
+
+  function maybeAutoPause(kind: "arrival" | "anomaly"): void {
+    const enabled = kind === "arrival" ? autoPauseArrival : autoPauseAnomaly;
+    if (!enabled || !snapshot || snapshot.time_accel === 0) return;
+    timeAccelBeforePause = snapshot.time_accel;
+    runAction({ type: "set_time_accel", multiplier: 0 }, "Pause failed");
+    panel.showToast("Paused — press Space to resume", "info");
+  }
   let showTleRefs = settings.showTleRefs;
   let showLegend = settings.showLegend;
   let timeAccelBeforePause = settings.timeAccelBeforePause;
@@ -276,6 +290,11 @@ async function main(): Promise<void> {
         },
         "Transfer target failed",
       );
+    },
+    onRenameCraft: (craftId, name) => {
+      if (runAction({ type: "rename_craft", craft_id: craftId, name }, "Rename failed")) {
+        panel.showToast(`Renamed to ${name}`, "info");
+      }
     },
     onUnlockProgram: (programId) => {
       if (runAction({ type: "unlock_program", program_id: programId }, "Program unlock failed")) {
@@ -631,7 +650,13 @@ async function main(): Promise<void> {
         maybeShowContextCard(ev.type);
         const msg = formatEvent(ev);
         panel.logEvent(msg, eventClass(ev));
-        if (ev.type === "pass_started") {
+        if (
+          ev.type === "pass_started" &&
+          ev.craft_id === panel.getSelectedCraftId()
+        ) {
+          // Queue tier: only the selected craft's passes toast — with four
+          // LEO craft at 90-minute periods, everything else is spam (log
+          // still records all of them).
           panel.showToast(msg, "success");
         }
         if (ev.type === "contract_completed") {
@@ -641,11 +666,20 @@ async function main(): Promise<void> {
         if (ev.type === "anomaly_started") {
           panel.showToast(msg, "error");
           panel.markTabAttention("ops");
+          // Interrupt tier only when the stricken craft carries a contract.
+          if (
+            snapshot.active_contracts.some(
+              (c) => c.assigned_craft_id === ev.craft_id,
+            )
+          ) {
+            maybeAutoPause("anomaly");
+          }
         }
         if (ev.type === "transfer_arrived") {
           panel.showToast(msg, "success");
           views.setActive("body");
           panel.markTabAttention("mission");
+          maybeAutoPause("arrival");
         }
         if (ev.type === "program_completed") {
           panel.showToast(msg, "success");

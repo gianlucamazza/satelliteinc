@@ -89,8 +89,7 @@ impl SimState {
         }
         self.company = company;
 
-        let name = format!("{}-1", bus.name);
-        let mut craft = Spacecraft::new_from_bus(&bus, &name, 0);
+        let mut craft = Spacecraft::new_from_bus(&bus, &bus.name, 0);
         craft.body_id.clone_from(&scenario.body_id);
         craft.target_altitude_km = scenario.altitude_km;
         craft.target_inclination_deg = scenario.inclination_deg;

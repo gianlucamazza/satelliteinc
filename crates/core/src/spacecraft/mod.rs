@@ -91,6 +91,15 @@ pub struct Spacecraft {
     pub transfer_target: Option<TransferTarget>,
     #[serde(default)]
     pub transfer: Option<ActiveTransfer>,
+    // --- Service record (presentation-grade bookkeeping) ---
+    #[serde(default)]
+    pub contracts_completed: u32,
+    #[serde(default)]
+    pub lifetime_revenue_usd: f64,
+    #[serde(default)]
+    pub lifetime_ops_usd: f64,
+    #[serde(default)]
+    pub launched_at_sim_seconds: Option<f64>,
 }
 
 impl Spacecraft {
@@ -122,6 +131,10 @@ impl Spacecraft {
             safe_mode_until: 0.0,
             transfer_target: None,
             transfer: None,
+            contracts_completed: 0,
+            lifetime_revenue_usd: 0.0,
+            lifetime_ops_usd: 0.0,
+            launched_at_sim_seconds: None,
         }
     }
 

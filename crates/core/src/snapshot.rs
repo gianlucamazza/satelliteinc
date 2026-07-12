@@ -154,6 +154,11 @@ pub struct SpacecraftSnapshot {
     pub light_delay_seconds: f64,
     /// This craft's daily ops line (company multiplier applied).
     pub ops_cost_usd_per_day: f64,
+    /// Service record: contracts completed by this craft.
+    pub contracts_completed: u32,
+    pub lifetime_revenue_usd: f64,
+    pub lifetime_ops_usd: f64,
+    pub launched_at_sim_seconds: Option<f64>,
     /// Craft-relative station geometry (reachable stations only).
     pub station_status: Vec<CraftStationStatus>,
     /// Cruise in progress (None on orbit / in design).

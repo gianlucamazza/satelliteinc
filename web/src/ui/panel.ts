@@ -71,6 +71,7 @@ export interface PanelCallbacks {
   onPurchaseTech: (techId: string) => void;
   onSetGameMode: (mode: string) => void;
   onDecommission: (salvageUsd: number) => void;
+  onRenameCraft: (craftId: number, name: string) => void;
   onSetTransferTarget: (
     bodyId: string,
     captureAltitudeKm: number,
@@ -571,6 +572,24 @@ export class HudPanel {
     const parts: string[] = [];
     const craft = this.selectedCraft(s);
 
+    if (craft && craft.phase !== "Design") {
+      const age =
+        craft.launched_at_sim_seconds == null
+          ? null
+          : (s.sim_seconds - craft.launched_at_sim_seconds) / 86_400;
+      const net = craft.lifetime_revenue_usd - craft.lifetime_ops_usd;
+      parts.push(`
+        <div class="field"><label>Service record — ${esc(craft.name)}</label>
+          <div class="row">
+            <input type="text" id="craft-name" value="${esc(craft.name)}" maxlength="40" title="Rename this craft" />
+            <button id="btn-rename-craft">Rename</button>
+          </div>
+          <div class="stat"><label>Contracts</label><strong>${craft.contracts_completed}</strong>${age != null ? `<span class="stat-sub">${age.toFixed(1)} d in service</span>` : ""}</div>
+          <div class="stat"><label>Net</label><strong class="${net >= 0 ? "" : "negative"}">${net >= 0 ? "+" : "−"}$${Math.abs(net).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong><span class="stat-sub">revenue vs lifetime ops</span></div>
+        </div>
+      `);
+    }
+
     const scenarios = this.content.scenarios ?? [];
     if (scenarios.length) {
       parts.push(`<div class="field"><label>Scenarios</label><select id="scenario-select">
@@ -944,6 +963,8 @@ export class HudPanel {
           )
         : "",
       craft?.transfer ? Math.round(craft.transfer.progress * 200) : "",
+      craft?.contracts_completed ?? "",
+      craft?.name ?? "",
       craft?.transfer
         ? Math.round(
             (craft.transfer.arrival_sim_seconds - s.sim_seconds) / 900,
@@ -1122,6 +1143,18 @@ export class HudPanel {
         const programId = target.dataset.program;
         if (programId) {
           this.callbacks.onUnlockProgram(programId);
+        }
+        return;
+      }
+      if (target.id === "btn-rename-craft") {
+        const input = document.getElementById(
+          "craft-name",
+        ) as HTMLInputElement | null;
+        const craft = this.currentSnapshot
+          ? this.selectedCraft(this.currentSnapshot)
+          : null;
+        if (input && craft && input.value.trim()) {
+          this.callbacks.onRenameCraft(craft.id, input.value.trim());
         }
         return;
       }

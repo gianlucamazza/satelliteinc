@@ -412,6 +412,27 @@ impl SimState {
         });
     }
 
+    /// Deterministic themed default name: pool by bus class, Roman-suffixed
+    /// on reuse ("Kestrel II"). Craft attachment is cheap and load-bearing.
+    fn default_craft_name(bus_id: &str, id: CraftId) -> String {
+        const CUBESAT: [&str; 4] = ["Sparrow", "Wren", "Finch", "Robin"];
+        const MICROSAT: [&str; 4] = ["Merlin", "Osprey", "Harrier", "Kite"];
+        const SMALLSAT: [&str; 4] = ["Falcon", "Condor", "Eagle", "Gyrfalcon"];
+        const EXPLORER: [&str; 4] = ["Kestrel", "Albatross", "Petrel", "Skua"];
+        const PIONEER: [&str; 4] = ["Voyager", "Ranger", "Surveyor", "Mariner"];
+        const ROMAN: [&str; 8] = ["", " II", " III", " IV", " V", " VI", " VII", " VIII"];
+        let pool: &[&str] = match bus_id {
+            "microsat" => &MICROSAT,
+            "smallsat" => &SMALLSAT,
+            "explorer" => &EXPLORER,
+            "pioneer" => &PIONEER,
+            _ => &CUBESAT,
+        };
+        let idx = id as usize % pool.len();
+        let round = id as usize / pool.len();
+        format!("{}{}", pool[idx], ROMAN[round.min(ROMAN.len() - 1)])
+    }
+
     pub fn apply_action(&mut self, action: PlayerAction) -> Result<(), SimError> {
         if matches!(
             self.company.outcome,
@@ -447,7 +468,7 @@ impl SimState {
                     self.remove_craft(idx);
                 }
                 let id = self.next_craft_id;
-                let name = format!("{}-{}", bus.name, id + 1);
+                let name = Self::default_craft_name(&bus.id, id);
                 self.add_craft(Spacecraft::new_from_bus(&bus, &name, id));
                 self.push_event(SimEvent::ActionApplied {
                     message: format!("Selected bus: {} ({name})", bus.name),
@@ -576,10 +597,14 @@ impl SimState {
                 );
                 let default_station = self.ground_stations.first().map(|s| s.id.clone());
                 self.company.cash_usd -= cost;
+                let now = self.clock.sim_seconds;
                 let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
                 craft.phase = CraftPhase::OnOrbit;
                 craft.elements = Some(elements);
                 craft.downlink_active = false;
+                if craft.launched_at_sim_seconds.is_none() {
+                    craft.launched_at_sim_seconds = Some(now);
+                }
                 if craft.downlink_station_id.is_none() {
                     craft.downlink_station_id = default_station;
                 }
@@ -788,6 +813,17 @@ impl SimState {
             PlayerAction::BeginTransfer { craft_id } => {
                 self.begin_transfer(craft_id)?;
             }
+            PlayerAction::RenameCraft { craft_id, name } => {
+                let trimmed = name.trim();
+                if trimmed.is_empty() || trimmed.len() > 40 {
+                    return Err(SimError::InvalidAction(
+                        "craft names are 1-40 characters".into(),
+                    ));
+                }
+                let trimmed = trimmed.to_string();
+                let craft = self.craft_mut(craft_id)?;
+                craft.name = trimmed;
+            }
             PlayerAction::AssignContract {
                 contract_id,
                 craft_id,
@@ -959,6 +995,12 @@ impl SimState {
     /// One craft's share of the tick: mechanical transcription of the old
     /// single-craft body, scoped to `fleet[idx]`.
     fn tick_craft(&mut self, idx: usize, dt: f64) {
+        // Service record: this craft's share of the daily burn.
+        if self.company.game_mode == GameMode::Campaign {
+            let daily = Self::craft_ops_raw_usd_per_day(&self.fleet[idx])
+                * self.company.ops_cost_multiplier;
+            self.fleet[idx].lifetime_ops_usd += daily * dt / SECONDS_PER_DAY;
+        }
         let craft_ref = &self.fleet[idx];
         let craft_id = craft_ref.id;
         if craft_ref.phase == CraftPhase::Transfer {
@@ -1268,6 +1310,12 @@ impl SimState {
                 self.company.cash_usd += payout;
                 self.company.completed_contracts.push(id.clone());
                 self.company.reputation = (self.company.reputation + rep).min(300.0);
+                if let Some(craft_id) = contract.assigned_craft_id
+                    && let Some(craft) = self.fleet.iter_mut().find(|c| c.id == craft_id)
+                {
+                    craft.contracts_completed += 1;
+                    craft.lifetime_revenue_usd += total_payout;
+                }
                 self.push_event(SimEvent::ContractCompleted {
                     contract_id: id,
                     payout_usd: total_payout,
@@ -1710,6 +1758,10 @@ impl SimState {
             transfer_planner: self.transfer_planner_snapshot(craft),
             ops_cost_usd_per_day: Self::craft_ops_raw_usd_per_day(craft)
                 * self.company.ops_cost_multiplier,
+            contracts_completed: craft.contracts_completed,
+            lifetime_revenue_usd: craft.lifetime_revenue_usd,
+            lifetime_ops_usd: craft.lifetime_ops_usd,
+            launched_at_sim_seconds: craft.launched_at_sim_seconds,
             station_status,
             light_delay_seconds: {
                 const C_KM_S: f64 = 299_792.458;

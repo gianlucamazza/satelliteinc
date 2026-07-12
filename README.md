@@ -2,7 +2,7 @@
 
 Browser-based satellite company simulator. Rust simulation core (WASM) + Three.js globe.
 
-**Playable through M13 — the full solar system campaign:** run an Earth imaging startup into an interplanetary agency. Programs gate the Moon, Mars, Venus and Jupiter; launch windows come from real mean-element ephemerides; transfers cruise on Hohmann rails with patched-conic burns; the Europa Ocean Survey is the grand victory.
+**Playable through M16 — a fleet-scale solar system campaign:** run an Earth imaging startup into an interplanetary agency. Programs gate the Moon, Mars, Venus and Jupiter; launch windows come from real mean-element ephemerides; transfers cruise on Hohmann rails with patched-conic burns; the Europa Ocean Survey is the grand victory.
 
 | Milestone | Feature                                                                                                          |
 | --------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -19,6 +19,9 @@ Browser-based satellite company simulator. Rust simulation core (WASM) + Three.j
 | M11 | Interplanetary transfers: launch windows on mean longitudes, cash injections, hibernated cruise, deterministic warp |
 | M12 | Campaign Programs (buy-ins, keystones, grants), mobilization advances with clawback, on-station contracts, Mars+Venus campaigns |
 | M13 | Jupiter finale: Pioneer RTG bus, Juno-style eccentric capture, radiation upsets, grand victory |
+| M14 | The fleet: concurrent spacecraft and contracts with explicit 1:1 assignment, fleet strip UI, save v4 |
+| M15 | Mission Control slots, in-campaign guided missions, contextual onboarding, warp-to-next-event |
+| M16 | Service records and renaming, notification tiers with auto-pause, themed craft names |
 
 Textures: Earth/Moon from the three.js examples (NASA imagery); Mars from [Solar System Scope](https://www.solarsystemscope.com/textures/) (CC BY 4.0).
 
