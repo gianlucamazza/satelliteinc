@@ -30,6 +30,9 @@ pub struct ActiveContract {
     pub reputation_reward: f64,
     pub min_distinct_stations: u32,
     pub stations_used: Vec<String>,
+    /// Body whose orbit fulfills this contract.
+    #[serde(default = "crate::content::default_body_id")]
+    pub body_id: String,
     #[serde(default)]
     pub min_altitude_km: Option<f64>,
     #[serde(default)]
@@ -61,6 +64,7 @@ impl ActiveContract {
             reputation_reward,
             min_distinct_stations: template.min_distinct_stations,
             stations_used: Vec::new(),
+            body_id: template.body_id.clone(),
             min_altitude_km: template.min_altitude_km,
             max_altitude_km: template.max_altitude_km,
             min_inclination_deg: template.min_inclination_deg,
@@ -236,9 +240,13 @@ impl CompanyState {
     /// Campaign victory condition: every contract template completed at least once.
     #[must_use]
     pub fn all_contracts_completed(&self, content: &GameContent) -> bool {
+        // Victory counts Earth contracts only until interplanetary Programs
+        // land (M12): off-world contracts are unreachable in campaign while
+        // transfers don't exist and must not make it unwinnable.
         content
             .contracts
             .iter()
+            .filter(|c| c.body_id == "earth")
             .all(|c| self.completed_contracts.contains(&c.id))
     }
 

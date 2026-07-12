@@ -114,13 +114,27 @@ impl Spacecraft {
         self.payload_mode == PayloadMode::Safe || sim_seconds < self.safe_mode_until
     }
 
+    /// `anomaly_solar_penalty` is the per-body flavor multiplier applied to
+    /// solar output while an anomaly is active and unsafed (1.0 = none).
     #[must_use]
-    pub fn power_balance_w(&self, in_sunlight: bool, solar_mult: f64, sim_seconds: f64) -> f64 {
+    pub fn power_balance_w(
+        &self,
+        in_sunlight: bool,
+        solar_mult: f64,
+        sim_seconds: f64,
+        anomaly_solar_penalty: f64,
+    ) -> f64 {
         let mut solar = if in_sunlight {
             self.bus.solar_power_w * solar_mult
         } else {
             0.0
         };
+        if let Some(a) = &self.active_anomaly
+            && !a.is_expired(sim_seconds)
+            && !self.in_safe_mode(sim_seconds)
+        {
+            solar *= anomaly_solar_penalty;
+        }
         if let Some(a) = &self.active_anomaly
             && a.kind == AnomalyType::PowerGlitch
             && !a.is_expired(sim_seconds)

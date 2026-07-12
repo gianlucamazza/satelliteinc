@@ -114,6 +114,9 @@ pub struct StationSnapshot {
     pub longitude_deg: f64,
     pub elevation_deg: f64,
     pub in_pass: bool,
+    /// Effective link bandwidth for the current craft (DSN-scaled).
     pub bandwidth_mbps: f64,
     pub next_pass_in_seconds: Option<f64>,
+    pub body_id: String,
+    pub dsn: bool,
 }

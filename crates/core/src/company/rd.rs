@@ -25,6 +25,8 @@ pub struct ContractOffer {
     pub min_altitude_km: Option<f64>,
     pub max_altitude_km: Option<f64>,
     pub min_inclination_deg: Option<f64>,
+    /// Body whose orbit fulfills this contract.
+    pub body_id: String,
     pub available: bool,
     /// Campaign only: already completed once — repeatable at reduced payout, no reputation.
     pub repeat: bool,
@@ -60,6 +62,7 @@ impl ContractOffer {
             min_altitude_km: template.min_altitude_km,
             max_altitude_km: template.max_altitude_km,
             min_inclination_deg: template.min_inclination_deg,
+            body_id: template.body_id.clone(),
             available: rep_ok,
             repeat,
         }

@@ -6,7 +6,7 @@
       "name": "Sun",
       "mu_km3_s2": 132712440018.0,
       "radius_km": 695700.0,
-      "rotation_rad_s": 2.8653290845717256e-6,
+      "rotation_rad_s": 2.8653290845717256e-06,
       "min_parking_altitude_km": 1000000.0,
       "max_parking_altitude_km": 10000000.0
     },
@@ -15,7 +15,7 @@
       "name": "Earth",
       "mu_km3_s2": 398600.4418,
       "radius_km": 6371.0,
-      "rotation_rad_s": 7.2921159e-5,
+      "rotation_rad_s": 7.2921159e-05,
       "parent": "sun",
       "orbit": {
         "semi_major_axis_km": 149598261.2,
@@ -34,7 +34,7 @@
       "name": "The Moon",
       "mu_km3_s2": 4902.800066,
       "radius_km": 1737.4,
-      "rotation_rad_s": 2.6616995272150692e-6,
+      "rotation_rad_s": 2.6616995272150692e-06,
       "parent": "earth",
       "orbit": {
         "semi_major_axis_km": 384400.0,
@@ -46,14 +46,20 @@
       },
       "min_parking_altitude_km": 30.0,
       "max_parking_altitude_km": 1500.0,
-      "texture": "moon"
+      "texture": "moon",
+      "dsn_bandwidth_factor": 0.7,
+      "anomaly_rate_multiplier": 1.1,
+      "anomaly_flavor": {
+        "power_glitch_label": "Mascon pointing drift",
+        "buffer_corruption_label": "Regolith static discharge"
+      }
     },
     {
       "id": "venus",
       "name": "Venus",
       "mu_km3_s2": 324858.592,
       "radius_km": 6051.8,
-      "rotation_rad_s": -2.992398738488947e-7,
+      "rotation_rad_s": -2.992398738488947e-07,
       "parent": "sun",
       "orbit": {
         "semi_major_axis_km": 108209475.3,
@@ -65,14 +71,19 @@
       },
       "min_parking_altitude_km": 300.0,
       "max_parking_altitude_km": 10000.0,
-      "texture": "venus"
+      "texture": "venus",
+      "dsn_bandwidth_factor": 0.09,
+      "anomaly_rate_multiplier": 1.5,
+      "anomaly_flavor": {
+        "power_glitch_label": "Thermal stress"
+      }
     },
     {
       "id": "mars",
       "name": "Mars",
       "mu_km3_s2": 42828.375214,
       "radius_km": 3389.5,
-      "rotation_rad_s": 7.088235959185674e-5,
+      "rotation_rad_s": 7.088235959185674e-05,
       "parent": "sun",
       "orbit": {
         "semi_major_axis_km": 227943824.8,
@@ -84,14 +95,21 @@
       },
       "min_parking_altitude_km": 250.0,
       "max_parking_altitude_km": 20000.0,
-      "texture": "mars"
+      "texture": "mars",
+      "dsn_bandwidth_factor": 0.06,
+      "anomaly_rate_multiplier": 1.3,
+      "anomaly_flavor": {
+        "comms_dropout_label": "Dust storm",
+        "comms_dropout_duration_s": 7200.0,
+        "solar_penalty_while_active": 0.5
+      }
     },
     {
       "id": "jupiter",
       "name": "Jupiter",
       "mu_km3_s2": 126686534.0,
       "radius_km": 69911.0,
-      "rotation_rad_s": 1.7585181380295513e-4,
+      "rotation_rad_s": 0.00017585181380295513,
       "parent": "sun",
       "orbit": {
         "semi_major_axis_km": 778340817.0,
@@ -103,7 +121,12 @@
       },
       "min_parking_altitude_km": 400000.0,
       "max_parking_altitude_km": 2000000.0,
-      "texture": "jupiter"
+      "texture": "jupiter",
+      "dsn_bandwidth_factor": 0.015,
+      "anomaly_rate_multiplier": 2.0,
+      "anomaly_flavor": {
+        "buffer_corruption_label": "Radiation upset"
+      }
     }
   ],
   "buses": [
@@ -151,6 +174,21 @@
       "isp_s": 310.0,
       "ops_cost_usd_per_day": 15000,
       "unlocked_by_default": false
+    },
+    {
+      "id": "explorer",
+      "name": "Explorer 200 (Deep Space)",
+      "mass_kg": 200.0,
+      "solar_power_w": 320.0,
+      "battery_wh": 1200.0,
+      "comms_mbps": 25.0,
+      "comms_power_w": 45.0,
+      "payload_power_w": 40.0,
+      "launch_cost_usd": 450000,
+      "propellant_kg": 140.0,
+      "isp_s": 320.0,
+      "ops_cost_usd_per_day": 20000,
+      "unlocked_by_default": false
     }
   ],
   "ground_stations": [
@@ -185,12 +223,42 @@
       "longitude_deg": 20.2253,
       "min_elevation_deg": 5.0,
       "bandwidth_mbps": 16.0
+    },
+    {
+      "id": "goldstone",
+      "name": "DSN Goldstone",
+      "latitude_deg": 35.4267,
+      "longitude_deg": -116.89,
+      "min_elevation_deg": 10.0,
+      "bandwidth_mbps": 40.0,
+      "body_id": "earth",
+      "dsn": true
+    },
+    {
+      "id": "madrid_dsn",
+      "name": "DSN Madrid",
+      "latitude_deg": 40.4314,
+      "longitude_deg": -4.248,
+      "min_elevation_deg": 10.0,
+      "bandwidth_mbps": 40.0,
+      "body_id": "earth",
+      "dsn": true
+    },
+    {
+      "id": "canberra_dsn",
+      "name": "DSN Canberra",
+      "latitude_deg": -35.4014,
+      "longitude_deg": 148.9817,
+      "min_elevation_deg": 10.0,
+      "bandwidth_mbps": 40.0,
+      "body_id": "earth",
+      "dsn": true
     }
   ],
   "contracts": [
     {
       "id": "earth_imaging",
-      "name": "Earth Imaging — Alpha",
+      "name": "Earth Imaging \u2014 Alpha",
       "description": "Downlink 500 MB of imagery within 7 sim-days.",
       "downlink_mb": 500.0,
       "deadline_days": 7.0,
@@ -200,7 +268,7 @@
     },
     {
       "id": "comms_relay",
-      "name": "Comms Relay — Beta",
+      "name": "Comms Relay \u2014 Beta",
       "description": "Downlink 1 GB within 10 days for relay test. Requires an orbit at or above 700 km.",
       "downlink_mb": 1024.0,
       "deadline_days": 10.0,
@@ -222,8 +290,8 @@
     },
     {
       "id": "rapid_eye",
-      "name": "Rapid Eye — Scout",
-      "description": "Fast turnaround: 300 MB in 4 days. Low orbit required — at or below 450 km.",
+      "name": "Rapid Eye \u2014 Scout",
+      "description": "Fast turnaround: 300 MB in 4 days. Low orbit required \u2014 at or below 450 km.",
       "downlink_mb": 300.0,
       "deadline_days": 4.0,
       "payout_usd": 280000,
@@ -241,6 +309,31 @@
       "reputation_required": 22.0,
       "reputation_reward": 15.0,
       "min_inclination_deg": 80.0
+    },
+    {
+      "id": "moon_mapper",
+      "name": "Selene Cartography",
+      "body_id": "moon",
+      "description": "Global lunar map: 1.5 GB from polar orbit below 150 km. Farside passes black out the Earth link.",
+      "downlink_mb": 1536,
+      "deadline_days": 21,
+      "payout_usd": 650000,
+      "reputation_required": 70,
+      "reputation_reward": 15,
+      "max_altitude_km": 150,
+      "min_inclination_deg": 80
+    },
+    {
+      "id": "mars_recon",
+      "name": "Ares Recon",
+      "body_id": "mars",
+      "description": "First look at Mars: 500 MB through the thin DSN pipe. Mind the dust storms.",
+      "downlink_mb": 500,
+      "deadline_days": 45,
+      "payout_usd": 950000,
+      "reputation_required": 120,
+      "reputation_reward": 20,
+      "max_altitude_km": 1000
     }
   ],
   "tech_tree": [
@@ -267,7 +360,9 @@
       "name": "SmallSat Bus License",
       "description": "Unlock the SmallSat 100 platform.",
       "cost_usd": 120000,
-      "requires": ["comms_mk2"],
+      "requires": [
+        "comms_mk2"
+      ],
       "unlocks_bus": "smallsat",
       "comms_multiplier": 1.0,
       "solar_multiplier": 1.0
@@ -277,7 +372,9 @@
       "name": "Comms Mk III",
       "description": "Ka-band experiment (+20% downlink rate).",
       "cost_usd": 130000,
-      "requires": ["comms_mk2"],
+      "requires": [
+        "comms_mk2"
+      ],
       "comms_multiplier": 1.2
     },
     {
@@ -285,7 +382,9 @@
       "name": "Propulsion Mk II",
       "description": "High-efficiency thruster (+15% Isp).",
       "cost_usd": 90000,
-      "requires": ["solar_mk2"],
+      "requires": [
+        "solar_mk2"
+      ],
       "isp_multiplier": 1.15
     },
     {
@@ -301,7 +400,9 @@
       "name": "Fault-Tolerant Bus",
       "description": "Anomalies rarer still (stacks with Redundant Avionics).",
       "cost_usd": 110000,
-      "requires": ["redundancy_mk1"],
+      "requires": [
+        "redundancy_mk1"
+      ],
       "anomaly_mtbf_multiplier": 1.6
     }
   ],
@@ -316,7 +417,7 @@
   "scenarios": [
     {
       "id": "campaign_start",
-      "name": "Campaign — First Contract",
+      "name": "Campaign \u2014 First Contract",
       "description": "Standard campaign: limited cash, reputation gates, one bus unlocked.",
       "game_mode": "campaign",
       "starting_cash": 450000,
@@ -348,6 +449,32 @@
       "contract_id": "comms_relay",
       "altitude_km": 450,
       "inclination_deg": 88
+    },
+    {
+      "id": "sandbox_luna",
+      "name": "Sandbox \u2014 Luna Station",
+      "description": "Explorer bus staged for lunar orbit: launch, map the poles, and learn the farside comms blackout.",
+      "game_mode": "sandbox",
+      "starting_cash": 1200000,
+      "starting_reputation": 70,
+      "bus_id": "explorer",
+      "body_id": "moon",
+      "contract_id": "moon_mapper",
+      "altitude_km": 100,
+      "inclination_deg": 85
+    },
+    {
+      "id": "sandbox_mars",
+      "name": "Sandbox \u2014 Ares Approach",
+      "description": "Explorer bus staged for Mars orbit: a thin DSN link, long dust storms, and a 24.6-hour day.",
+      "game_mode": "sandbox",
+      "starting_cash": 1500000,
+      "starting_reputation": 120,
+      "bus_id": "explorer",
+      "body_id": "mars",
+      "contract_id": "mars_recon",
+      "altitude_km": 400,
+      "inclination_deg": 60
     }
   ]
 }

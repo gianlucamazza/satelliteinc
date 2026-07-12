@@ -132,7 +132,12 @@ export class HudPanel {
 
   update(snapshot: Snapshot): void {
     this.currentSnapshot = snapshot;
-    this.phaseEl.textContent = `${snapshot.phase.replace(/_/g, " ")} · ${snapshot.game_mode}`;
+    const bodyName =
+      snapshot.spacecraft && snapshot.spacecraft.body_id !== "earth"
+        ? snapshot.bodies.find((b) => b.id === snapshot.spacecraft?.body_id)
+            ?.name
+        : null;
+    this.phaseEl.textContent = `${snapshot.phase.replace(/_/g, " ")} · ${snapshot.game_mode}${bodyName ? ` · ${bodyName}` : ""}`;
     this.renderStatus(snapshot);
     this.renderActions(snapshot);
     this.updateActionDynamicState(snapshot);
@@ -311,14 +316,25 @@ export class HudPanel {
     const craft = s.spacecraft;
     const contract = s.active_contract;
     const nextPass = nextPassStation(s);
+    const craftBodyId = craft?.body_id ?? "earth";
 
     const stationRows = s.ground_stations
+      .filter(
+        (st) =>
+          st.body_id === craftBodyId ||
+          (st.dsn && craftBodyId !== "earth"),
+      )
       .map((st) => {
         const passEta =
           st.in_pass || st.next_pass_in_seconds == null
             ? ""
             : `<span class="stat-sub">next ${formatDuration(st.next_pass_in_seconds)}</span>`;
-        return `<div class="stat"><label>${esc(st.name)}</label><strong class="${st.in_pass ? "pass-active" : ""}">${st.in_pass ? "PASS" : `${st.elevation_deg.toFixed(0)}°`}</strong><span class="stat-sub">${st.bandwidth_mbps.toFixed(0)} Mbps</span>${passEta}</div>`;
+        const idle =
+          st.dsn && st.body_id !== craftBodyId
+            ? "NO LINK"
+            : `${st.elevation_deg.toFixed(0)}°`;
+        const active = st.dsn && st.body_id !== craftBodyId ? "LINK" : "PASS";
+        return `<div class="stat"><label>${esc(st.name)}</label><strong class="${st.in_pass ? "pass-active" : ""}">${st.in_pass ? active : idle}</strong><span class="stat-sub">${st.bandwidth_mbps.toFixed(1)} Mbps</span>${passEta}</div>`;
       })
       .join("");
 
@@ -447,7 +463,7 @@ export class HudPanel {
     const scenarios = this.content.scenarios ?? [];
     if (scenarios.length) {
       parts.push(`<div class="field"><label>Scenarios</label><select id="scenario-select">
-        ${scenarios.map((sc) => `<option value="${esc(sc.id)}">${esc(sc.name)}</option>`).join("")}
+        ${scenarios.map((sc) => `<option value="${esc(sc.id)}">${esc(sc.name)}${sc.body_id && sc.body_id !== "earth" ? ` [${esc(sc.body_id)}]` : ""}</option>`).join("")}
       </select></div>`);
       parts.push(
         `<button id="btn-load-scenario" class="primary">Load scenario</button>`,
@@ -565,7 +581,14 @@ export class HudPanel {
     parts.push(`
       <div class="field"><label>Downlink station</label>
         <select id="downlink-station">
-          ${s.ground_stations.map((st) => `<option value="${esc(st.id)}" ${craft.downlink_station_id === st.id ? "selected" : ""}>${esc(st.name)} (${st.bandwidth_mbps} Mbps)</option>`).join("")}
+          ${s.ground_stations
+            .filter(
+              (st) =>
+                st.body_id === craft.body_id ||
+                (st.dsn && craft.body_id !== "earth"),
+            )
+            .map((st) => `<option value="${esc(st.id)}" ${craft.downlink_station_id === st.id ? "selected" : ""}>${esc(st.name)} (${st.bandwidth_mbps.toFixed(1)} Mbps)</option>`)
+            .join("")}
         </select>
         <p class="hint" title="Click a station marker on the globe to select">Tip: click station on globe</p>
       </div>

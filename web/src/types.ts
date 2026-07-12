@@ -32,6 +32,8 @@ export interface ActiveContract {
   reputation_reward: number;
   min_distinct_stations: number;
   stations_used: string[];
+  /** Body whose orbit fulfills this contract. */
+  body_id: string;
   min_altitude_km: number | null;
   max_altitude_km: number | null;
   min_inclination_deg: number | null;
@@ -49,6 +51,7 @@ export interface ContractOffer {
   min_altitude_km: number | null;
   max_altitude_km: number | null;
   min_inclination_deg: number | null;
+  body_id: string;
   available: boolean;
   repeat: boolean;
 }
@@ -142,8 +145,11 @@ export interface StationSnapshot {
   longitude_deg: number;
   elevation_deg: number;
   in_pass: boolean;
+  /** Effective link bandwidth for the current craft (DSN-scaled). */
   bandwidth_mbps: number;
   next_pass_in_seconds: number | null;
+  body_id: string;
+  dsn: boolean;
 }
 
 export interface Snapshot {
@@ -207,6 +213,7 @@ export interface ContractTemplate {
   payout_usd: number;
   reputation_required?: number;
   reputation_reward?: number;
+  body_id?: string;
 }
 
 export interface GroundStationDef {
@@ -216,6 +223,8 @@ export interface GroundStationDef {
   longitude_deg: number;
   min_elevation_deg: number;
   bandwidth_mbps?: number;
+  body_id?: string;
+  dsn?: boolean;
 }
 
 export interface TleEntry {
@@ -233,6 +242,7 @@ export interface ScenarioTemplate {
   starting_cash: number;
   starting_reputation: number;
   bus_id: string;
+  body_id?: string;
   contract_id?: string | null;
   altitude_km: number;
   inclination_deg: number;

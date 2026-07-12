@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::content::CelestialBodyDef;
+use crate::content::{AnomalyFlavorDef, CelestialBodyDef};
 use crate::error::SimError;
 use crate::orbit::{KeplerElements, eci_position_km, mean_to_true_anomaly_deg};
 
@@ -29,6 +29,11 @@ pub struct CelestialBody {
     pub max_parking_altitude_km: f64,
     /// Renderer pass-through (texture id); physics never reads it.
     pub texture: Option<String>,
+    /// Effective DSN bandwidth fraction from this body.
+    pub dsn_bandwidth_factor: f64,
+    /// Divides the anomaly MTBF at this body.
+    pub anomaly_rate_multiplier: f64,
+    pub anomaly_flavor: Option<AnomalyFlavorDef>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +100,9 @@ impl BodyRegistry {
                 min_parking_altitude_km: def.min_parking_altitude_km,
                 max_parking_altitude_km: def.max_parking_altitude_km,
                 texture: def.texture.clone(),
+                dsn_bandwidth_factor: def.dsn_bandwidth_factor,
+                anomaly_rate_multiplier: def.anomaly_rate_multiplier,
+                anomaly_flavor: def.anomaly_flavor.clone(),
             });
         }
 

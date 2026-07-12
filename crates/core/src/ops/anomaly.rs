@@ -13,6 +13,9 @@ pub struct ActiveAnomaly {
     pub kind: AnomalyType,
     pub started_at_sim_seconds: f64,
     pub duration_seconds: f64,
+    /// Per-body flavor name (e.g. "Dust storm" on Mars); base label if None.
+    #[serde(default)]
+    pub label_override: Option<String>,
 }
 
 impl ActiveAnomaly {
@@ -29,6 +32,7 @@ impl ActiveAnomaly {
             kind,
             started_at_sim_seconds: sim_seconds,
             duration_seconds,
+            label_override: None,
         }
     }
 
@@ -39,7 +43,10 @@ impl ActiveAnomaly {
     }
 
     #[must_use]
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> &str {
+        if let Some(label) = &self.label_override {
+            return label;
+        }
         match self.kind {
             AnomalyType::PowerGlitch => "Power glitch",
             AnomalyType::CommsDropout => "Comms dropout",

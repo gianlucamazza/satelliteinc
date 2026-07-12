@@ -14,6 +14,9 @@ pub struct ScenarioTemplate {
     pub starting_cash: f64,
     pub starting_reputation: f64,
     pub bus_id: String,
+    /// Body the scenario's spacecraft operates around.
+    #[serde(default = "crate::content::default_body_id")]
+    pub body_id: String,
     #[serde(default)]
     pub contract_id: Option<String>,
     #[serde(default = "default_alt")]
@@ -69,6 +72,7 @@ impl SimState {
         self.company = company;
 
         let mut craft = Spacecraft::new_from_bus(&bus, &bus.name);
+        craft.body_id.clone_from(&scenario.body_id);
         craft.target_altitude_km = scenario.altitude_km;
         craft.target_inclination_deg = scenario.inclination_deg;
         self.spacecraft = Some(craft);

@@ -29,9 +29,9 @@ fn unmanaged_anomaly_drains_extra_power() {
     let mut craft = craft_from("microsat");
     craft.downlink_active = false;
 
-    let healthy = craft.power_balance_w(true, 1.0, 0.0);
+    let healthy = craft.power_balance_w(true, 1.0, 0.0, 1.0);
     craft.active_anomaly = Some(ActiveAnomaly::new(AnomalyType::CommsDropout, 0.0));
-    let stressed = craft.power_balance_w(true, 1.0, 10.0);
+    let stressed = craft.power_balance_w(true, 1.0, 10.0, 1.0);
     assert!(
         stressed < healthy,
         "active anomaly outside safe mode must draw extra power"

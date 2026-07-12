@@ -1,6 +1,6 @@
 import { Pane } from "tweakpane";
 import gameContent from "../../content/game.json";
-import { GlobeRenderer } from "./render/globe.ts";
+import { BodyView } from "./render/body-view.ts";
 import {
   exportSave,
   importSave,
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const globe = new GlobeRenderer(canvas, {
+  const globe = new BodyView(canvas, {
     onStationSelect: (stationId) => {
       if (snapshot?.spacecraft?.phase !== "OnOrbit") {
         panel.showToast("Launch first to select a downlink station", "info");

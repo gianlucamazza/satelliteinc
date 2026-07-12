@@ -40,7 +40,8 @@ fn multi_station_pass_and_command_queue() {
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 500.0 })
         .unwrap();
 
-    assert_eq!(sim.ground_stations.len(), 4);
+    assert_eq!(sim.ground_stations.iter().filter(|s| !s.dsn).count(), 4);
+    assert_eq!(sim.ground_stations.iter().filter(|s| s.dsn).count(), 3);
 
     let mut command_ran = false;
     // ~3 orbits worth of sim time, bounded sim ticks

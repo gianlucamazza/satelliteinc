@@ -4,25 +4,22 @@ import {
   CSS2DRenderer,
   CSS2DObject,
 } from "three/addons/renderers/CSS2DRenderer.js";
-import type { Snapshot } from "../types.ts";
+import type { BodySnapshot, Snapshot } from "../types.ts";
 import {
   bodyRadiusRender,
   eciKmToRender,
   stationLatLonToRender,
 } from "./coords.ts";
+import { bodyStyle } from "./body-specs.ts";
 import { designOrbitPoints } from "./orbit-preview.ts";
 import { offsetAlongNormal, shouldShowLabel } from "./visibility.ts";
 
-/**
- * The globe view renders Earth until BodyView (M9) parameterizes the mesh
- * from snapshot.bodies. Rotation already comes from the snapshot.
- */
-const EARTH_RADIUS_KM = 6371;
+// Marker/label lifts as fractions of the body radius so they stay visually
+// proportionate from the Moon (1737 km) to Jupiter (69911 km).
+const MARKER_LIFT_FRACTION = 0.1 / 6.371;
+const LABEL_LIFT_FRACTION = 0.28 / 6.371;
 
-const MARKER_LIFT = 0.1;
-const LABEL_LIFT = 0.28;
-
-export interface GlobeOptions {
+export interface BodyViewOptions {
   onStationSelect?: (stationId: string) => void;
   showTleRefs?: () => boolean;
 }
@@ -32,15 +29,24 @@ interface RefSatObjects {
   label: CSS2DObject;
 }
 
-export class GlobeRenderer {
+/**
+ * Renders the spacecraft's current central body at the world origin.
+ * `setBody` swaps the mesh, stations, and camera scale when the craft's
+ * `body_id` changes; everything body-agnostic (satellite, trail, downlink
+ * line, starfield, controls) survives the swap.
+ */
+export class BodyView {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGLRenderer;
   readonly labelRenderer: CSS2DRenderer;
   readonly controls: OrbitControls;
 
-  private readonly earth: THREE.Mesh;
-  private readonly earthFixed: THREE.Group;
+  private bodyMesh: THREE.Mesh | null = null;
+  private bodyId = "";
+  private radiusRender = bodyRadiusRender(6371);
+  private readonly bodyFixed: THREE.Group;
+  private readonly sunLight: THREE.DirectionalLight;
   private readonly orbitLine: THREE.Line;
   private readonly designOrbitLine: THREE.Line;
   private readonly downlinkLine: THREE.Line;
@@ -56,14 +62,14 @@ export class GlobeRenderer {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
   private readonly worldPos = new THREE.Vector3();
-  private readonly options: GlobeOptions;
+  private readonly options: BodyViewOptions;
   private orbitTrailKey = "";
   private designOrbitKey = "";
   private autoFollow = true;
   private userControlUntil = 0;
   private showTleRefs = true;
 
-  constructor(canvas: HTMLCanvasElement, options: GlobeOptions = {}) {
+  constructor(canvas: HTMLCanvasElement, options: BodyViewOptions = {}) {
     this.options = options;
     this.showTleRefs = options.showTleRefs?.() ?? true;
 
@@ -74,7 +80,7 @@ export class GlobeRenderer {
       45,
       window.innerWidth / window.innerHeight,
       0.01,
-      200,
+      400,
     );
     this.camera.position.set(0, 0, 18);
 
@@ -100,56 +106,17 @@ export class GlobeRenderer {
     });
 
     const ambient = new THREE.AmbientLight(0x334466, 0.45);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-    sun.position.set(12, 4, 8);
-    this.scene.add(ambient, sun);
+    this.sunLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    this.sunLight.position.set(12, 4, 8);
+    this.scene.add(ambient, this.sunLight);
 
-    const earthGeo = new THREE.SphereGeometry(
-      bodyRadiusRender(EARTH_RADIUS_KM),
-      64,
-      64,
-    );
-    const earthMat = new THREE.MeshPhongMaterial({
-      color: 0x4488cc,
-      emissive: 0x0a1520,
-      shininess: 18,
-    });
-    const loader = new THREE.TextureLoader();
-    const applyEarthTexture = (tex: THREE.Texture) => {
-      // The ECI→render mapping swaps Y/Z (a reflection), so mirror the
-      // equirect texture in longitude to keep geography under the markers.
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.repeat.x = -1;
-      earthMat.map = tex;
-      earthMat.needsUpdate = true;
-    };
-    loader.load(
-      "/textures/earth_atmos_2048.jpg",
-      applyEarthTexture,
-      undefined,
-      () => {
-        loader.load(
-          "https://raw.githubusercontent.com/mrdoob/three.js/r175/examples/textures/planets/earth_atmos_2048.jpg",
-          applyEarthTexture,
-          undefined,
-          () => {
-            console.warn(
-              "Earth texture unavailable (local and remote) — using flat shading",
-            );
-          },
-        );
-      },
-    );
-    this.earth = new THREE.Mesh(earthGeo, earthMat);
-    this.earth.renderOrder = 0;
-
-    // Everything anchored to the ground (Earth mesh, station markers/labels)
+    // Everything anchored to the ground (body mesh, station markers/labels)
     // lives in this group, rotated together each frame.
-    this.earthFixed = new THREE.Group();
+    this.bodyFixed = new THREE.Group();
     this.stationMarkers = new THREE.Group();
     this.stationLabels = new THREE.Group();
-    this.earthFixed.add(this.earth, this.stationMarkers, this.stationLabels);
-    this.scene.add(this.earthFixed);
+    this.bodyFixed.add(this.stationMarkers, this.stationLabels);
+    this.scene.add(this.bodyFixed);
 
     const orbitMat = new THREE.LineBasicMaterial({
       color: 0x4da3ff,
@@ -204,9 +171,15 @@ export class GlobeRenderer {
     this.starfield = this.createStarfield();
     this.scene.add(this.starfield);
 
-    canvas.addEventListener("pointerdown", (e) => { this.onPointerDown(e); });
-    canvas.addEventListener("pointermove", (e) => { this.onPointerMove(e); });
-    window.addEventListener("resize", () => { this.onResize(); });
+    canvas.addEventListener("pointerdown", (e) => {
+      this.onPointerDown(e);
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      this.onPointerMove(e);
+    });
+    window.addEventListener("resize", () => {
+      this.onResize();
+    });
 
     // One-time camera-controls hint.
     const hint = document.getElementById("camera-hint");
@@ -225,6 +198,87 @@ export class GlobeRenderer {
 
   setShowTleRefs(show: boolean): void {
     this.showTleRefs = show;
+  }
+
+  private markerLift(): number {
+    return this.radiusRender * MARKER_LIFT_FRACTION;
+  }
+
+  private labelLift(): number {
+    return this.radiusRender * LABEL_LIFT_FRACTION;
+  }
+
+  /** Swap the rendered central body. Disposes the old mesh and stations. */
+  private setBody(body: BodySnapshot): void {
+    this.bodyId = body.id;
+    this.radiusRender = bodyRadiusRender(body.radius_km);
+
+    if (this.bodyMesh) {
+      this.bodyFixed.remove(this.bodyMesh);
+      this.bodyMesh.geometry.dispose();
+      const material = this.bodyMesh.material as THREE.MeshPhongMaterial;
+      material.map?.dispose();
+      material.dispose();
+      this.bodyMesh = null;
+    }
+    // Station markers belong to the previous body: rebuild from scratch.
+    for (const dot of this.stationDots.values()) {
+      this.stationMarkers.remove(dot);
+      (dot.material as THREE.Material).dispose();
+    }
+    for (const label of this.stationLabelObjs.values()) {
+      this.stationLabels.remove(label);
+      label.element.remove();
+    }
+    this.stationDots.clear();
+    this.stationLabelObjs.clear();
+    this.orbitTrailKey = "";
+    this.designOrbitKey = "";
+
+    const style = bodyStyle(body.texture);
+    const geo = new THREE.SphereGeometry(this.radiusRender, 64, 64);
+    const mat = new THREE.MeshPhongMaterial({
+      color: style.fallbackColor,
+      emissive: style.emissive,
+      shininess: 18,
+    });
+    const applyTexture = (tex: THREE.Texture) => {
+      // The ECI→render mapping swaps Y/Z (a reflection), so mirror the
+      // equirect texture in longitude to keep geography under the markers.
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.repeat.x = -1;
+      mat.map = tex;
+      // Texture carries the albedo; drop the flat tint.
+      mat.color.set(0xffffff);
+      mat.needsUpdate = true;
+    };
+    if (style.textureUrl) {
+      const loader = new THREE.TextureLoader();
+      loader.load(style.textureUrl, applyTexture, undefined, () => {
+        if (style.remoteFallbackUrl) {
+          loader.load(style.remoteFallbackUrl, applyTexture, undefined, () => {
+            console.warn(`${body.id} texture unavailable — flat shading`);
+          });
+        } else {
+          console.warn(`${body.id} texture unavailable — flat shading`);
+        }
+      });
+    }
+    this.bodyMesh = new THREE.Mesh(geo, mat);
+    this.bodyMesh.renderOrder = 0;
+    this.bodyFixed.add(this.bodyMesh);
+
+    // Camera envelope scales with the body.
+    this.controls.minDistance = this.radiusRender * 1.3;
+    this.controls.maxDistance = this.radiusRender * 7;
+    const distance = this.camera.position.length();
+    if (
+      distance < this.controls.minDistance ||
+      distance > this.controls.maxDistance
+    ) {
+      this.camera.position.normalize().multiplyScalar(this.radiusRender * 2.8);
+    }
+    this.controls.target.set(0, 0, 0);
   }
 
   private createStarfield(): THREE.Points {
@@ -278,20 +332,22 @@ export class GlobeRenderer {
 
   private syncStations(snapshot: Snapshot): void {
     for (const station of snapshot.ground_stations) {
+      // Only stations sitting on the rendered body get surface markers.
+      if (station.body_id !== this.bodyId) continue;
       let dot = this.stationDots.get(station.id);
       let label = this.stationLabelObjs.get(station.id);
       if (!dot || !label) {
         const surface = stationLatLonToRender(
           station.latitude_deg,
           station.longitude_deg,
-          bodyRadiusRender(EARTH_RADIUS_KM),
+          this.radiusRender,
         );
         dot = new THREE.Mesh(
           this.markerGeometry,
           new THREE.MeshBasicMaterial({ depthTest: true, depthWrite: false }),
         );
         dot.position.copy(
-          offsetAlongNormal(surface, bodyRadiusRender(EARTH_RADIUS_KM), MARKER_LIFT),
+          offsetAlongNormal(surface, this.radiusRender, this.markerLift()),
         );
         dot.userData.stationId = station.id;
         dot.renderOrder = 2;
@@ -302,7 +358,7 @@ export class GlobeRenderer {
         labelDiv.textContent = station.name;
         label = new CSS2DObject(labelDiv);
         label.position.copy(
-          offsetAlongNormal(surface, bodyRadiusRender(EARTH_RADIUS_KM), LABEL_LIFT),
+          offsetAlongNormal(surface, this.radiusRender, this.labelLift()),
         );
         this.stationLabels.add(label);
         this.stationLabelObjs.set(station.id, label);
@@ -324,6 +380,8 @@ export class GlobeRenderer {
   }
 
   private syncReferenceSats(snapshot: Snapshot): void {
+    // TLE reference sats are Earth-orbit by nature (SGP4).
+    const showAny = this.showTleRefs && this.bodyId === "earth";
     const seen = new Set<number>();
     for (const ref of snapshot.reference_satellites) {
       seen.add(ref.norad_id);
@@ -344,9 +402,9 @@ export class GlobeRenderer {
       }
       const refPos = eciKmToRender(ref.position_eci_km);
       const show =
-        this.showTleRefs &&
+        showAny &&
         shouldShowLabel(refPos, this.camera, {
-          occludeRadius: bodyRadiusRender(EARTH_RADIUS_KM),
+          occludeRadius: this.radiusRender,
         });
       entry.dot.position.copy(refPos);
       entry.dot.visible = show;
@@ -359,20 +417,31 @@ export class GlobeRenderer {
       if (!seen.has(id)) {
         this.referenceSats.remove(entry.dot, entry.label);
         (entry.dot.material as THREE.Material).dispose();
+        entry.label.element.remove();
         this.refSats.delete(id);
       }
     }
   }
 
   update(snapshot: Snapshot): void {
-    // Rotation rate comes from the snapshot (single source of truth: the
-    // core registry). Sign matches the ECI→render Y/Z swap so ECEF-anchored
-    // stations line up with the sim's pass geometry.
     const focusBodyId = snapshot.spacecraft?.body_id ?? "earth";
     const focusBody = snapshot.bodies.find((b) => b.id === focusBodyId);
-    this.earthFixed.rotation.y =
+    if (focusBody && focusBody.id !== this.bodyId) {
+      this.setBody(focusBody);
+    }
+
+    // Rotation rate comes from the snapshot (single source of truth: the
+    // core registry). Sign matches the ECI→render Y/Z swap so body-fixed
+    // stations line up with the sim's pass geometry.
+    this.bodyFixed.rotation.y =
       -snapshot.sim_seconds * (focusBody?.rotation_rad_s ?? 0);
-    this.earthFixed.updateMatrixWorld(true);
+    this.bodyFixed.updateMatrixWorld(true);
+
+    // Light from the true per-body sun direction (same axis swap as ECI).
+    if (focusBody) {
+      const d = focusBody.sun_direction;
+      this.sunLight.position.set(d[0] * 50, d[2] * 50, d[1] * 50);
+    }
 
     this.syncStations(snapshot);
     this.syncReferenceSats(snapshot);
@@ -385,11 +454,11 @@ export class GlobeRenderer {
       this.orbitLine.visible = false;
       this.orbitTrailKey = "";
       if (craft?.phase === "Design") {
-        const designKey = `${craft.target_altitude_km}|${craft.target_inclination_deg}`;
+        const designKey = `${this.bodyId}|${craft.target_altitude_km}|${craft.target_inclination_deg}`;
         if (designKey !== this.designOrbitKey) {
           this.designOrbitKey = designKey;
           const pts = designOrbitPoints(
-            bodyRadiusRender(EARTH_RADIUS_KM),
+            this.radiusRender,
             craft.target_altitude_km,
             craft.target_inclination_deg,
           );
@@ -414,7 +483,7 @@ export class GlobeRenderer {
 
     const pos = eciKmToRender(craft.position_eci_km);
     this.satellite.visible = shouldShowLabel(pos, this.camera, {
-      occludeRadius: bodyRadiusRender(EARTH_RADIUS_KM),
+      occludeRadius: this.radiusRender,
     });
     this.satellite.position.copy(pos);
     (this.satellite.material as THREE.MeshBasicMaterial).color.set(
@@ -426,7 +495,7 @@ export class GlobeRenderer {
       // orbit's shape actually changes, not every frame.
       const el = craft.elements;
       const trailKey = el
-        ? `${el.semi_major_axis_km.toFixed(2)}|${el.eccentricity.toFixed(6)}|${el.inclination_deg.toFixed(3)}|${el.raan_deg.toFixed(3)}|${el.arg_perigee_deg.toFixed(3)}`
+        ? `${this.bodyId}|${el.semi_major_axis_km.toFixed(2)}|${el.eccentricity.toFixed(6)}|${el.inclination_deg.toFixed(3)}|${el.raan_deg.toFixed(3)}|${el.arg_perigee_deg.toFixed(3)}`
         : String(craft.orbit_trail_km.length);
       if (trailKey !== this.orbitTrailKey) {
         this.orbitTrailKey = trailKey;
@@ -461,7 +530,11 @@ export class GlobeRenderer {
     }
     if (this.autoFollow) {
       this.controls.target.lerp(pos, 0.08);
-      const camGoal = new THREE.Vector3(pos.x, pos.y + 3, pos.z + 8);
+      const camGoal = new THREE.Vector3(
+        pos.x,
+        pos.y + this.radiusRender * 0.47,
+        pos.z + this.radiusRender * 1.26,
+      );
       this.camera.position.lerp(camGoal, 0.05);
     }
   }

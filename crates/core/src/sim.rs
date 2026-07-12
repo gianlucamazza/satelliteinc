@@ -93,6 +93,65 @@ impl SimState {
         }
     }
 
+    /// Whether a station can serve a craft at the given body: local dishes
+    /// on the same body, or Earth DSN dishes for any craft beyond Earth.
+    fn station_reachable(station: &GroundStation, craft_body_id: &str) -> bool {
+        station.body_id == craft_body_id || (station.dsn && craft_body_id != "earth")
+    }
+
+    /// Link bandwidth for a station serving a craft at `body`: full for a
+    /// local dish, scaled by the body's DSN factor over a deep-space link.
+    fn station_bandwidth_for(station: &GroundStation, body: &CelestialBody) -> f64 {
+        if station.body_id == body.id {
+            station.bandwidth_mbps
+        } else {
+            station.bandwidth_mbps * body.dsn_bandwidth_factor
+        }
+    }
+
+    /// Unit vector from the craft's body toward Earth at `sim_seconds`.
+    fn earth_direction_from(&self, body_id: &str, sim_seconds: f64) -> [f64; 3] {
+        let body_idx = self.bodies.idx(body_id).expect("validated body id");
+        let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
+        let e = self.bodies.heliocentric_position_km(earth_idx, sim_seconds);
+        let b = self.bodies.heliocentric_position_km(body_idx, sim_seconds);
+        let d = [e[0] - b[0], e[1] - b[1], e[2] - b[2]];
+        let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if r < 1.0 {
+            return [1.0, 0.0, 0.0];
+        }
+        [d[0] / r, d[1] / r, d[2] / r]
+    }
+
+    /// Seconds until the craft next has line of sight to Earth (DSN window),
+    /// searching forward like `seconds_until_pass`.
+    fn seconds_until_los(
+        &self,
+        body: &CelestialBody,
+        elements: &crate::orbit::KeplerElements,
+        from_sim_seconds: f64,
+        max_search_seconds: f64,
+        step_seconds: f64,
+    ) -> Option<f64> {
+        let earth_dir = self.earth_direction_from(&body.id, from_sim_seconds);
+        #[allow(clippy::cast_sign_loss)] // positive durations
+        let steps = (max_search_seconds / step_seconds).ceil() as u64;
+        let mut was_visible = {
+            let eci = eci_position_km(body.mu_km3_s2, elements, from_sim_seconds);
+            in_sunlight(eci, earth_dir, body.radius_km)
+        };
+        for i in 1..=steps {
+            let t = from_sim_seconds + i as f64 * step_seconds;
+            let eci = eci_position_km(body.mu_km3_s2, elements, t);
+            let visible = in_sunlight(eci, earth_dir, body.radius_km);
+            if visible && !was_visible {
+                return Some(t - from_sim_seconds);
+            }
+            was_visible = visible;
+        }
+        None
+    }
+
     pub fn apply_action(&mut self, action: PlayerAction) -> Result<(), SimError> {
         if matches!(
             self.company.outcome,
@@ -305,8 +364,16 @@ impl SimState {
                 craft.payload_mode_before_safe = None;
             }
             PlayerAction::SelectDownlinkStation { station_id } => {
-                if !self.ground_stations.iter().any(|s| s.id == station_id) {
-                    return Err(SimError::Content(format!("unknown station: {station_id}")));
+                let craft_body_id = self.craft_body().id.clone();
+                let station = self
+                    .ground_stations
+                    .iter()
+                    .find(|s| s.id == station_id)
+                    .ok_or_else(|| SimError::Content(format!("unknown station: {station_id}")))?;
+                if !Self::station_reachable(station, &craft_body_id) {
+                    return Err(SimError::InvalidAction(format!(
+                        "station {station_id} cannot serve a craft at {craft_body_id}"
+                    )));
                 }
                 let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
                 craft.downlink_station_id = Some(station_id);
@@ -315,8 +382,16 @@ impl SimState {
                 command,
                 station_id,
             } => {
-                if !self.ground_stations.iter().any(|s| s.id == station_id) {
-                    return Err(SimError::Content(format!("unknown station: {station_id}")));
+                let craft_body_id = self.craft_body().id.clone();
+                let station = self
+                    .ground_stations
+                    .iter()
+                    .find(|s| s.id == station_id)
+                    .ok_or_else(|| SimError::Content(format!("unknown station: {station_id}")))?;
+                if !Self::station_reachable(station, &craft_body_id) {
+                    return Err(SimError::InvalidAction(format!(
+                        "station {station_id} cannot serve a craft at {craft_body_id}"
+                    )));
                 }
                 let sim_seconds = self.clock.sim_seconds;
                 let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
@@ -418,15 +493,31 @@ impl SimState {
         };
 
         let sim_seconds = self.clock.sim_seconds;
-        let (mu, radius, rotation) = {
+        let craft_body_id = craft_ref.body_id.clone();
+        let (mu, radius, rotation, body_idx) = {
             let body = self.craft_body();
-            (body.mu_km3_s2, body.radius_km, body.rotation_rad_s)
+            (
+                body.mu_km3_s2,
+                body.radius_km,
+                body.rotation_rad_s,
+                self.bodies.idx(&body.id).expect("validated body id"),
+            )
         };
         let eci = eci_position_km(mu, &elements, sim_seconds);
-        // Sun pinned to +X until the ephemerides drive it (M10); identical
-        // to the pre-solar-system fixed-shadow model.
-        let sunlight = in_sunlight(eci, [1.0, 0.0, 0.0], radius);
+        // Per-body sun direction, frozen at epoch until the seasonal sun
+        // lands (M10). Earth sits on -X at epoch, so its direction stays the
+        // +X the fixed-shadow model always used.
+        let sun_dir = self.bodies.sun_direction_from(body_idx, 0.0);
+        let sunlight = in_sunlight(eci, sun_dir, radius);
         let ecef = eci_to_ecef_km(rotation, eci, sim_seconds);
+        // Deep-space link: visible when the craft's own body doesn't block
+        // the Earth direction (the same cylinder test as the shadow).
+        let earth_los = if craft_body_id == "earth" {
+            false
+        } else {
+            let earth_dir = self.earth_direction_from(&craft_body_id, sim_seconds);
+            in_sunlight(eci, earth_dir, radius)
+        };
 
         let comms_mult = self.company.comms_multiplier;
         let solar_mult = self.company.solar_multiplier;
@@ -436,13 +527,19 @@ impl SimState {
 
         let mut pass_starts: Vec<(String, String)> = Vec::new();
         for (i, station) in self.ground_stations.iter().enumerate() {
-            let in_pass = is_in_pass(
-                radius,
-                station.latitude_deg,
-                station.longitude_deg,
-                station.min_elevation_deg,
-                ecef,
-            );
+            let in_pass = if station.body_id == craft_body_id {
+                is_in_pass(
+                    radius,
+                    station.latitude_deg,
+                    station.longitude_deg,
+                    station.min_elevation_deg,
+                    ecef,
+                )
+            } else if station.dsn {
+                earth_los
+            } else {
+                false
+            };
             station_passes[i] = in_pass;
             let was_active = self.pass_active[i];
             if in_pass && !was_active {
@@ -472,15 +569,29 @@ impl SimState {
                 craft.active_anomaly = None;
                 craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
             }
+            let flavor = self.bodies.body(body_idx).anomaly_flavor.clone();
+            let body_rate = self.bodies.body(body_idx).anomaly_rate_multiplier;
             if craft.active_anomaly.is_none()
                 && let Some(kind) = roll_anomaly(
                     sim_seconds,
                     dt,
                     craft.anomaly_cooldown_until,
-                    self.company.anomaly_mtbf_multiplier,
+                    self.company.anomaly_mtbf_multiplier / body_rate,
                 )
             {
-                let anomaly = ActiveAnomaly::new(kind, sim_seconds);
+                let mut anomaly = ActiveAnomaly::new(kind, sim_seconds);
+                if let Some(flavor) = &flavor {
+                    anomaly.label_override = match kind {
+                        AnomalyType::PowerGlitch => flavor.power_glitch_label.clone(),
+                        AnomalyType::CommsDropout => flavor.comms_dropout_label.clone(),
+                        AnomalyType::BufferCorruption => flavor.buffer_corruption_label.clone(),
+                    };
+                    if kind == AnomalyType::CommsDropout
+                        && let Some(duration) = flavor.comms_dropout_duration_s
+                    {
+                        anomaly.duration_seconds = duration;
+                    }
+                }
                 let label = anomaly.label().to_string();
                 if kind == AnomalyType::BufferCorruption {
                     craft.buffer_mb *= 0.75;
@@ -513,7 +624,14 @@ impl SimState {
             })
             .unwrap_or_else(|| station_passes.iter().any(|&p| p));
 
-        let balance = craft.power_balance_w(sunlight, solar_mult, sim_seconds);
+        let anomaly_solar_penalty = self
+            .bodies
+            .body(body_idx)
+            .anomaly_flavor
+            .as_ref()
+            .map_or(1.0, |f| f.solar_penalty_while_active);
+        let balance =
+            craft.power_balance_w(sunlight, solar_mult, sim_seconds, anomaly_solar_penalty);
         craft.power_wh = (craft.power_wh + balance * dt / 3600.0).clamp(0.0, craft.bus.battery_wh);
 
         // Imaging needs power, like downlink below.
@@ -524,11 +642,12 @@ impl SimState {
 
         let mut transferred = 0.0;
         if craft.downlink_active && downlink_pass && craft.buffer_mb > 0.0 && craft.power_wh > 1.0 {
+            let body = self.bodies.body(body_idx);
             let station_bandwidth = craft
                 .downlink_station_id
                 .as_ref()
                 .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                .map(|s| s.bandwidth_mbps);
+                .map(|s| Self::station_bandwidth_for(s, body));
             let rate = craft.downlink_rate_mb_s(comms_mult, station_bandwidth, sim_seconds);
             transferred = (rate * dt).min(craft.buffer_mb);
             craft.buffer_mb -= transferred;
@@ -696,6 +815,17 @@ impl SimState {
         let game_phase = self.derive_game_phase();
         let marketplace = self.company.marketplace(&self.content);
         let craft_body = self.craft_body();
+        let craft_body_idx = self.bodies.idx(&craft_body.id).expect("validated body id");
+        let sun_dir = self.bodies.sun_direction_from(craft_body_idx, 0.0);
+        let earth_los_now = |elements: &crate::orbit::KeplerElements| {
+            if craft_body.id == "earth" {
+                false
+            } else {
+                let dir = self.earth_direction_from(&craft_body.id, self.clock.sim_seconds);
+                let eci = eci_position_km(craft_body.mu_km3_s2, elements, self.clock.sim_seconds);
+                in_sunlight(eci, dir, craft_body.radius_km)
+            }
+        };
 
         let spacecraft = self.spacecraft.as_ref().map(|craft| {
             let (position, velocity, trail, in_pass, sunlight) = if let Some(elements) =
@@ -706,16 +836,21 @@ impl SimState {
                 let vel = eci_velocity_km_s(mu, &elements, self.clock.sim_seconds);
                 let trail = orbit_trail_samples(mu, &elements, self.clock.sim_seconds, 128);
                 let ecef = eci_to_ecef_km(craft_body.rotation_rad_s, eci, self.clock.sim_seconds);
+                let los = earth_los_now(&elements);
                 let in_pass = self.ground_stations.iter().any(|s| {
-                    is_in_pass(
-                        craft_body.radius_km,
-                        s.latitude_deg,
-                        s.longitude_deg,
-                        s.min_elevation_deg,
-                        ecef,
-                    )
+                    if s.body_id == craft_body.id {
+                        is_in_pass(
+                            craft_body.radius_km,
+                            s.latitude_deg,
+                            s.longitude_deg,
+                            s.min_elevation_deg,
+                            ecef,
+                        )
+                    } else {
+                        s.dsn && los
+                    }
                 });
-                let sunlight = in_sunlight(eci, [1.0, 0.0, 0.0], craft_body.radius_km);
+                let sunlight = in_sunlight(eci, sun_dir, craft_body.radius_km);
                 (eci, vel, trail, in_pass, sunlight)
             } else {
                 ([0.0; 3], [0.0; 3], vec![], false, true)
@@ -767,7 +902,7 @@ impl SimState {
                         .downlink_station_id
                         .as_ref()
                         .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                        .map(|s| s.bandwidth_mbps),
+                        .map(|s| Self::station_bandwidth_for(s, craft_body)),
                     self.clock.sim_seconds,
                 ),
                 imaging_rate_mb_s: craft.imaging_rate_mb_s(sunlight, self.clock.sim_seconds),
@@ -798,14 +933,11 @@ impl SimState {
             .ground_stations
             .iter()
             .map(|station| {
-                let def = self
-                    .content
-                    .ground_stations
-                    .iter()
-                    .find(|d| d.id == station.id);
-                let bandwidth = def.map_or(50.0, |d| d.bandwidth_mbps);
-                let elevation = if let Some(craft) = self.spacecraft.as_ref() {
-                    if let Some(elements) = craft.elements {
+                let local = station.body_id == craft_body.id;
+                let deep_space = station.dsn && !local && craft_body.id != "earth";
+                let elements = self.spacecraft.as_ref().and_then(|c| c.elements);
+                let elevation = match (local, elements) {
+                    (true, Some(elements)) => {
                         let eci = eci_position_km(
                             craft_body.mu_km3_s2,
                             &elements,
@@ -819,30 +951,41 @@ impl SimState {
                             station.longitude_deg,
                             ecef,
                         )
-                    } else {
-                        -90.0
                     }
-                } else {
-                    -90.0
+                    _ => -90.0,
                 };
-                let in_pass = elevation >= station.min_elevation_deg;
+                let in_pass = if local {
+                    elevation >= station.min_elevation_deg
+                } else {
+                    deep_space && elements.is_some_and(|e| earth_los_now(&e))
+                };
                 let next_pass_in_seconds = if in_pass {
                     None
-                } else {
-                    self.spacecraft.as_ref().and_then(|craft| {
-                        craft.elements.and_then(|elements| {
-                            crate::ops::seconds_until_pass(
-                                craft_body,
-                                &elements,
-                                station.latitude_deg,
-                                station.longitude_deg,
-                                station.min_elevation_deg,
-                                self.clock.sim_seconds,
-                                7200.0,
-                                15.0,
-                            )
-                        })
+                } else if local {
+                    elements.and_then(|elements| {
+                        crate::ops::seconds_until_pass(
+                            craft_body,
+                            &elements,
+                            station.latitude_deg,
+                            station.longitude_deg,
+                            station.min_elevation_deg,
+                            self.clock.sim_seconds,
+                            7200.0,
+                            15.0,
+                        )
                     })
+                } else if deep_space {
+                    elements.and_then(|elements| {
+                        self.seconds_until_los(
+                            craft_body,
+                            &elements,
+                            self.clock.sim_seconds,
+                            7200.0,
+                            15.0,
+                        )
+                    })
+                } else {
+                    None
                 };
                 StationSnapshot {
                     id: station.id.clone(),
@@ -851,16 +994,20 @@ impl SimState {
                     longitude_deg: station.longitude_deg,
                     elevation_deg: elevation,
                     in_pass,
-                    bandwidth_mbps: bandwidth,
+                    bandwidth_mbps: Self::station_bandwidth_for(station, craft_body),
                     next_pass_in_seconds,
+                    body_id: station.body_id.clone(),
+                    dsn: station.dsn,
                 }
             })
             .collect();
 
         let active_contract_orbit_ok = self.company.active_contract.as_ref().and_then(|c| {
-            self.spacecraft
-                .as_ref()
-                .and_then(|craft| craft.elements.map(|e| c.orbit_ok(&e, craft_body.radius_km)))
+            self.spacecraft.as_ref().and_then(|craft| {
+                craft
+                    .elements
+                    .map(|e| c.body_id == craft.body_id && c.orbit_ok(&e, craft_body.radius_km))
+            })
         });
 
         let bodies: Vec<BodySnapshot> = (0..self.bodies.len())

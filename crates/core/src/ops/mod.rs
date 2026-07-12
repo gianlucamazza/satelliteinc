@@ -18,6 +18,8 @@ pub struct GroundStation {
     pub longitude_deg: f64,
     pub min_elevation_deg: f64,
     pub bandwidth_mbps: f64,
+    pub body_id: String,
+    pub dsn: bool,
 }
 
 impl From<&GroundStationDef> for GroundStation {
@@ -29,6 +31,8 @@ impl From<&GroundStationDef> for GroundStation {
             longitude_deg: def.longitude_deg,
             min_elevation_deg: def.min_elevation_deg,
             bandwidth_mbps: def.bandwidth_mbps,
+            body_id: def.body_id.clone(),
+            dsn: def.dsn,
         }
     }
 }

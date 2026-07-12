@@ -42,6 +42,33 @@ pub struct CelestialBodyDef {
     /// Renderer pass-through; physics never reads it.
     #[serde(default)]
     pub texture: Option<String>,
+    /// Effective DSN bandwidth fraction from this body (difficulty dial).
+    #[serde(default = "default_one")]
+    pub dsn_bandwidth_factor: f64,
+    /// Divides the anomaly MTBF at this body (>1 = more anomalies).
+    #[serde(default = "default_one")]
+    pub anomaly_rate_multiplier: f64,
+    /// Optional per-body anomaly reskin/behavior.
+    #[serde(default)]
+    pub anomaly_flavor: Option<AnomalyFlavorDef>,
+}
+
+/// Per-body anomaly flavor: relabel the base archetypes and optionally
+/// change their bite (all data, no code per body).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnomalyFlavorDef {
+    #[serde(default)]
+    pub power_glitch_label: Option<String>,
+    #[serde(default)]
+    pub comms_dropout_label: Option<String>,
+    #[serde(default)]
+    pub buffer_corruption_label: Option<String>,
+    /// Override the comms-dropout duration (e.g. Mars dust storms run long).
+    #[serde(default)]
+    pub comms_dropout_duration_s: Option<f64>,
+    /// Extra solar multiplier while an anomaly is active and unsafed.
+    #[serde(default = "default_one")]
+    pub solar_penalty_while_active: f64,
 }
 
 /// Parent-relative Kepler elements; mean anomaly given at sim t = 0.
@@ -84,6 +111,9 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             min_parking_altitude_km: 1_000_000.0,
             max_parking_altitude_km: 10_000_000.0,
             texture: None,
+            dsn_bandwidth_factor: 1.0,
+            anomaly_rate_multiplier: 1.0,
+            anomaly_flavor: None,
         },
         CelestialBodyDef {
             id: "earth".into(),
@@ -104,6 +134,9 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             min_parking_altitude_km: 200.0,
             max_parking_altitude_km: 2_000.0,
             texture: Some("earth".into()),
+            dsn_bandwidth_factor: 1.0,
+            anomaly_rate_multiplier: 1.0,
+            anomaly_flavor: None,
         },
     ]
 }
@@ -146,6 +179,17 @@ pub struct GroundStationDef {
     pub min_elevation_deg: f64,
     #[serde(default = "default_bandwidth")]
     pub bandwidth_mbps: f64,
+    /// Body this station sits on.
+    #[serde(default = "default_body_id")]
+    pub body_id: String,
+    /// Deep Space Network dish: reaches craft at other bodies over a
+    /// line-of-sight link at `body.dsn_bandwidth_factor` of its bandwidth.
+    #[serde(default)]
+    pub dsn: bool,
+}
+
+pub(crate) fn default_body_id() -> String {
+    "earth".into()
 }
 
 fn default_bandwidth() -> f64 {
@@ -167,6 +211,9 @@ pub struct ContractTemplate {
     /// Minimum distinct ground stations that must receive downlink (0 = no requirement).
     #[serde(default)]
     pub min_distinct_stations: u32,
+    /// Body whose orbit fulfills this contract.
+    #[serde(default = "default_body_id")]
+    pub body_id: String,
     /// Orbit requirements: contract progress only accrues while these hold.
     #[serde(default)]
     pub min_altitude_km: Option<f64>,
@@ -320,21 +367,26 @@ impl GameContent {
                 )));
             }
         }
-        // Contracts are Earth-bound until they carry a body id (M9): their
-        // requirements must be reachable within Earth's parking clamps.
-        let earth = self
-            .bodies
-            .iter()
-            .find(|b| b.id == "earth")
-            .expect("checked above");
-        let parking = earth.min_parking_altitude_km..=earth.max_parking_altitude_km;
+        // Contract requirements must be reachable within the parking clamps
+        // of the contract's own body.
         for contract in &self.contracts {
+            let body = self
+                .bodies
+                .iter()
+                .find(|b| b.id == contract.body_id)
+                .ok_or_else(|| {
+                    SimError::Content(format!(
+                        "contract '{}' references unknown body '{}'",
+                        contract.id, contract.body_id
+                    ))
+                })?;
+            let parking = body.min_parking_altitude_km..=body.max_parking_altitude_km;
             let min_alt = contract
                 .min_altitude_km
-                .unwrap_or(earth.min_parking_altitude_km);
+                .unwrap_or(body.min_parking_altitude_km);
             let max_alt = contract
                 .max_altitude_km
-                .unwrap_or(earth.max_parking_altitude_km);
+                .unwrap_or(body.max_parking_altitude_km);
             if !parking.contains(&min_alt)
                 || !parking.contains(&max_alt)
                 || min_alt > max_alt
@@ -346,6 +398,40 @@ impl GameContent {
                     "contract '{}' has unsatisfiable orbit requirements",
                     contract.id
                 )));
+            }
+        }
+        for station in &self.ground_stations {
+            let body_known = self.bodies.iter().any(|b| b.id == station.body_id);
+            if !body_known {
+                return Err(SimError::Content(format!(
+                    "station '{}' references unknown body '{}'",
+                    station.id, station.body_id
+                )));
+            }
+            if station.dsn && station.body_id != "earth" {
+                return Err(SimError::Content(format!(
+                    "DSN station '{}' must be on earth",
+                    station.id
+                )));
+            }
+        }
+        for body in &self.bodies {
+            if body.dsn_bandwidth_factor <= 0.0 || body.anomaly_rate_multiplier <= 0.0 {
+                return Err(SimError::Content(format!(
+                    "body '{}' has non-positive gameplay multipliers",
+                    body.id
+                )));
+            }
+            if let Some(flavor) = &body.anomaly_flavor
+                && (flavor.solar_penalty_while_active <= 0.0
+                    || flavor.comms_dropout_duration_s.is_some_and(|d| d <= 0.0))
+            {
+                {
+                    return Err(SimError::Content(format!(
+                        "body '{}' has a non-physical anomaly flavor",
+                        body.id
+                    )));
+                }
             }
         }
         for tech in &self.tech_tree {
@@ -377,6 +463,12 @@ impl GameContent {
             }
         }
         for scenario in &self.scenarios {
+            if !self.bodies.iter().any(|b| b.id == scenario.body_id) {
+                return Err(SimError::Content(format!(
+                    "scenario '{}' references unknown body '{}'",
+                    scenario.id, scenario.body_id
+                )));
+            }
             if self.bus(&scenario.bus_id).is_none() {
                 return Err(SimError::Content(format!(
                     "scenario '{}' references unknown bus '{}'",
