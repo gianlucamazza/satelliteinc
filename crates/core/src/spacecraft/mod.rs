@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::BusTemplate;
 use crate::ops::{ActiveAnomaly, AnomalyType, QueuedCommand};
-use crate::orbit::{delta_v_capacity_km_s, KeplerElements};
+use crate::orbit::{KeplerElements, delta_v_capacity_km_s};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CraftPhase {
     Design,
     OnOrbit,
@@ -22,12 +22,19 @@ pub enum PayloadMode {
     DownlinkPriority,
 }
 
+fn default_body_id() -> String {
+    "earth".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spacecraft {
     pub name: String,
     pub bus_id: String,
     pub bus: BusTemplate,
     pub phase: CraftPhase,
+    /// Central body whose BCI frame `elements` are expressed in.
+    #[serde(default = "default_body_id")]
+    pub body_id: String,
     pub elements: Option<KeplerElements>,
     pub power_wh: f64,
     pub buffer_mb: f64,
@@ -50,12 +57,14 @@ pub struct Spacecraft {
 }
 
 impl Spacecraft {
+    #[must_use]
     pub fn new_from_bus(bus: &BusTemplate, name: &str) -> Self {
         Self {
             name: name.to_string(),
             bus_id: bus.id.clone(),
             bus: bus.clone(),
             phase: CraftPhase::Design,
+            body_id: default_body_id(),
             elements: None,
             power_wh: bus.battery_wh,
             buffer_mb: 0.0,
@@ -76,40 +85,50 @@ impl Spacecraft {
         }
     }
 
+    #[must_use]
     pub fn max_buffer_mb(&self) -> f64 {
         2_048.0
     }
 
+    #[must_use]
     pub fn dry_mass_kg(&self) -> f64 {
         self.bus.mass_kg
     }
 
-    pub fn delta_v_remaining_km_s(&self) -> f64 {
-        delta_v_capacity_km_s(self.dry_mass_kg(), self.propellant_kg, self.bus.isp_s)
+    #[must_use]
+    pub fn delta_v_remaining_km_s(&self, isp_mult: f64) -> f64 {
+        delta_v_capacity_km_s(
+            self.dry_mass_kg(),
+            self.propellant_kg,
+            self.bus.isp_s * isp_mult,
+        )
     }
 
-    pub fn current_altitude_km(&self) -> Option<f64> {
-        self.elements
-            .map(|e| e.semi_major_axis_km - crate::constants::EARTH_RADIUS_KM)
+    #[must_use]
+    pub fn current_altitude_km(&self, body_radius_km: f64) -> Option<f64> {
+        self.elements.map(|e| e.semi_major_axis_km - body_radius_km)
     }
 
+    #[must_use]
     pub fn in_safe_mode(&self, sim_seconds: f64) -> bool {
         self.payload_mode == PayloadMode::Safe || sim_seconds < self.safe_mode_until
     }
 
+    #[must_use]
     pub fn power_balance_w(&self, in_sunlight: bool, solar_mult: f64, sim_seconds: f64) -> f64 {
         let mut solar = if in_sunlight {
             self.bus.solar_power_w * solar_mult
         } else {
             0.0
         };
-        if let Some(a) = &self.active_anomaly {
-            if a.kind == AnomalyType::PowerGlitch && !a.is_expired(sim_seconds) {
-                solar *= 0.5;
-            }
+        if let Some(a) = &self.active_anomaly
+            && a.kind == AnomalyType::PowerGlitch
+            && !a.is_expired(sim_seconds)
+        {
+            solar *= 0.5;
         }
 
-        let (payload, comms) = if self.in_safe_mode(sim_seconds) {
+        let (mut payload, comms) = if self.in_safe_mode(sim_seconds) {
             (self.bus.payload_power_w * 0.1, 0.0)
         } else {
             match self.payload_mode {
@@ -138,21 +157,42 @@ impl Spacecraft {
                 }
             }
         };
+        // An unmanaged anomaly stresses the bus; safing shields the draw.
+        if let Some(a) = &self.active_anomaly
+            && !a.is_expired(sim_seconds)
+            && !self.in_safe_mode(sim_seconds)
+        {
+            payload *= 1.2;
+        }
         solar - payload - comms
     }
 
-    pub fn downlink_rate_mb_s(&self, comms_mult: f64, sim_seconds: f64) -> f64 {
+    #[must_use]
+    pub fn downlink_rate_mb_s(
+        &self,
+        comms_mult: f64,
+        station_bandwidth_mbps: Option<f64>,
+        sim_seconds: f64,
+    ) -> f64 {
         if !self.downlink_active {
             return 0.0;
         }
-        if let Some(a) = &self.active_anomaly {
-            if a.kind == AnomalyType::CommsDropout && !a.is_expired(sim_seconds) {
-                return 0.0;
-            }
+        if let Some(a) = &self.active_anomaly
+            && a.kind == AnomalyType::CommsDropout
+            && !a.is_expired(sim_seconds)
+        {
+            return 0.0;
         }
-        self.bus.comms_mbps * comms_mult / 8.0
+        // The ground station caps the link after tech multipliers, so
+        // station choice stays meaningful post-R&D.
+        let mut rate_mbps = self.bus.comms_mbps * comms_mult;
+        if let Some(bandwidth) = station_bandwidth_mbps {
+            rate_mbps = rate_mbps.min(bandwidth);
+        }
+        rate_mbps / 8.0
     }
 
+    #[must_use]
     pub fn imaging_rate_mb_s(&self, in_sunlight: bool, sim_seconds: f64) -> f64 {
         if self.phase != CraftPhase::OnOrbit || !in_sunlight || self.in_safe_mode(sim_seconds) {
             return 0.0;

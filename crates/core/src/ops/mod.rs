@@ -2,13 +2,12 @@ mod anomaly;
 mod command;
 mod visibility;
 
-pub use anomaly::{roll_anomaly, ActiveAnomaly, AnomalyType, ANOMALY_COOLDOWN_SECONDS};
-pub use command::{execute_command, CommandType, QueuedCommand};
+pub use anomaly::{ANOMALY_COOLDOWN_SECONDS, ActiveAnomaly, AnomalyType, roll_anomaly};
+pub use command::{CommandType, QueuedCommand, execute_command};
 pub use visibility::{elevation_deg, geodetic_to_ecef_km, is_in_pass, seconds_until_pass};
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::EARTH_ROTATION_RAD_S;
 use crate::content::GroundStationDef;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,9 +33,11 @@ impl From<&GroundStationDef> for GroundStation {
     }
 }
 
-/// Convert ECI position (km) to ECEF (km) using simplified Earth rotation.
-pub fn eci_to_ecef_km(eci: [f64; 3], sim_seconds: f64) -> [f64; 3] {
-    let theta = EARTH_ROTATION_RAD_S * sim_seconds;
+/// Convert body-centered-inertial position (km) to body-fixed (km) for a
+/// body rotating at `rotation_rad_s` (rotation angle zero at sim t = 0).
+#[must_use]
+pub fn eci_to_ecef_km(rotation_rad_s: f64, eci: [f64; 3], sim_seconds: f64) -> [f64; 3] {
+    let theta = rotation_rad_s * sim_seconds;
     let (st, ct) = theta.sin_cos();
     [
         ct * eci[0] + st * eci[1],
@@ -45,14 +46,16 @@ pub fn eci_to_ecef_km(eci: [f64; 3], sim_seconds: f64) -> [f64; 3] {
     ]
 }
 
-/// Whether the satellite is in sunlight (simplified: above Earth's shadow cone).
-///
-/// The sun is intentionally fixed along ECI +X: the shadow cylinder never
-/// moves with sim time. This keeps eclipse timing deterministic and cheap;
-/// replace with a time-advancing sun vector if seasonal/diurnal variation
-/// ever matters for gameplay.
-pub fn in_sunlight(eci_km: [f64; 3]) -> bool {
-    // Simplified cylindrical shadow along -X (sun direction approximation)
-    let r = (eci_km[1].powi(2) + eci_km[2].powi(2)).sqrt();
-    !(eci_km[0] < 0.0 && r < crate::constants::EARTH_RADIUS_KM)
+/// Whether the satellite is in sunlight: cylindrical shadow of a body of
+/// radius `body_radius_km`, cast opposite the unit sun direction.
+#[must_use]
+pub fn in_sunlight(eci_km: [f64; 3], sun_dir_unit: [f64; 3], body_radius_km: f64) -> bool {
+    let s = eci_km[0] * sun_dir_unit[0] + eci_km[1] * sun_dir_unit[1] + eci_km[2] * sun_dir_unit[2];
+    let perp = [
+        eci_km[0] - s * sun_dir_unit[0],
+        eci_km[1] - s * sun_dir_unit[1],
+        eci_km[2] - s * sun_dir_unit[2],
+    ];
+    let r = (perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt();
+    !(s < 0.0 && r < body_radius_km)
 }

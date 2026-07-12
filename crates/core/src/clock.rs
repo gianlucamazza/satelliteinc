@@ -11,6 +11,7 @@ pub struct SimClock {
 }
 
 impl SimClock {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             sim_seconds: 0.0,
@@ -19,6 +20,7 @@ impl SimClock {
         }
     }
 
+    #[must_use]
     pub fn sim_days(&self) -> f64 {
         self.sim_seconds / SECONDS_PER_DAY
     }

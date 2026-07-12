@@ -27,21 +27,21 @@ Player input (HUD; Tweakpane only with `?debug`)
 
 ## Coordinate conventions
 
-- **Sim:** ECI position in km (`f64`), Earth radius 6371 km.
+- **Sim:** body-centered-inertial position in km (`f64`); every body frame shares the heliocentric axis orientation. Body constants (μ, radius, rotation) come from `content/game.json` via `BodyRegistry` — Earth is just the body `"earth"`.
 - **Render:** Parent-relative offsets; `km * 0.001` → Three.js units. Y-up maps ECI Z (north pole).
 - **View scale** is a render-only knob; physics always uses canonical km.
 
 ## WASM API
 
-| Export | Purpose |
-|--------|---------|
-| `init(content_json)` | Load game content, reset sim |
-| `step(real_dt)` | Advance sim, return Snapshot JSON |
+| Export                      | Purpose                             |
+| --------------------------- | ----------------------------------- |
+| `init(content_json)`        | Load game content, reset sim        |
+| `step(real_dt)`             | Advance sim, return Snapshot JSON   |
 | `apply_action(action_json)` | Player action, return Snapshot JSON |
-| `drain_events()` | Poll event queue since last drain |
-| `reset(content_json)` | Re-init |
-| `export_save()` | Serialize sim state JSON |
-| `import_save(save_json)` | Restore sim state, return Snapshot |
+| `drain_events()`            | Poll event queue since last drain   |
+| `reset(content_json)`       | Re-init                             |
+| `export_save()`             | Serialize sim state JSON            |
+| `import_save(save_json)`    | Restore sim state, return Snapshot  |
 
 ## Content pipeline
 

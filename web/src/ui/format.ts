@@ -53,6 +53,69 @@ export function formatDuration(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)} h`;
 }
 
+export interface OrbitRequirements {
+  min_altitude_km: number | null;
+  max_altitude_km: number | null;
+  min_inclination_deg: number | null;
+}
+
+/** Human-readable orbit requirement summary, or "" when unconstrained. */
+export function orbitRequirementText(req: OrbitRequirements): string {
+  const parts: string[] = [];
+  if (req.min_altitude_km != null)
+    parts.push(`alt ≥ ${req.min_altitude_km} km`);
+  if (req.max_altitude_km != null)
+    parts.push(`alt ≤ ${req.max_altitude_km} km`);
+  if (req.min_inclination_deg != null)
+    parts.push(`inc ≥ ${req.min_inclination_deg}°`);
+  return parts.join(" · ");
+}
+
+export interface DataFlowStatus {
+  text: string;
+  kind: "ok" | "warn" | "bad";
+}
+
+/** One-line diagnosis of why contract data is (or isn't) flowing. */
+export function dataFlowStatus(s: Snapshot): DataFlowStatus | null {
+  const craft = s.spacecraft;
+  if (craft?.phase !== "OnOrbit") return null;
+  if (s.active_contract && s.active_contract_orbit_ok === false) {
+    return { text: "Orbit out of spec — data not accepted", kind: "bad" };
+  }
+  if (!craft.downlink_active) {
+    if (craft.buffer_mb < 1 && craft.imaging_rate_mb_s === 0) {
+      return {
+        text: craft.in_sunlight
+          ? "Not imaging (safe mode or anomaly)"
+          : "Not imaging (eclipse) — waiting for sunlight",
+        kind: "warn",
+      };
+    }
+    return { text: "Downlink off — buffer filling", kind: "warn" };
+  }
+  if (!craft.in_pass) {
+    const next = s.ground_stations
+      .map((st) => st.next_pass_in_seconds)
+      .filter((v): v is number => v != null)
+      .sort((a, b) => a - b)[0];
+    return {
+      text: `Waiting for pass${next != null ? ` (next in ${formatDuration(next)})` : ""}`,
+      kind: "warn",
+    };
+  }
+  if (craft.buffer_mb < 1) {
+    return { text: "Buffer empty — nothing to downlink", kind: "warn" };
+  }
+  return { text: "Downlinking ✓", kind: "ok" };
+}
+
+/** Sim-days until bankruptcy (−50k floor); null when not burning cash. */
+export function bankruptcyRunwayDays(s: Snapshot): number | null {
+  if (s.ops_cost_usd_per_day <= 0) return null;
+  return (s.cash_usd + 50_000) / s.ops_cost_usd_per_day;
+}
+
 export function commandLabel(cmd: string): string {
   switch (cmd) {
     case "clear_anomaly":

@@ -19,7 +19,7 @@ where
     })
 }
 
-fn sim_error(err: SimError) -> JsValue {
+fn sim_error(err: &SimError) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
@@ -32,7 +32,8 @@ pub fn wasm_start() {
 pub fn init(content_json: &str) -> Result<(), JsValue> {
     let content = GameContent::from_json(content_json)
         .map_err(|e| JsValue::from_str(&format!("invalid content: {e}")))?;
-    SIM.with(|cell| *cell.borrow_mut() = Some(SimState::new(content)));
+    let sim = SimState::new(content).map_err(|e| sim_error(&e))?;
+    SIM.with(|cell| *cell.borrow_mut() = Some(sim));
     Ok(())
 }
 
@@ -49,7 +50,7 @@ pub fn apply_action(action_json: &str) -> Result<String, JsValue> {
     with_sim(|sim| {
         let action: PlayerAction = serde_json::from_str(action_json)
             .map_err(|e| JsValue::from_str(&format!("invalid action: {e}")))?;
-        sim.apply_action(action).map_err(sim_error)?;
+        sim.apply_action(action).map_err(|e| sim_error(&e))?;
         serde_json::to_string(&sim.snapshot()).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
@@ -93,7 +94,7 @@ pub fn import_save(save_json: &str) -> Result<String, JsValue> {
         let save = SaveGame::from_json(save_json)
             .map_err(|e| JsValue::from_str(&format!("invalid save: {e}")))?;
         let content = sim.content.clone();
-        let new_sim = SimState::import_save(content, save).map_err(sim_error)?;
+        let new_sim = SimState::import_save(content, save).map_err(|e| sim_error(&e))?;
         let snapshot = new_sim.snapshot();
         *borrow = Some(new_sim);
         serde_json::to_string(&snapshot).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -102,6 +103,7 @@ pub fn import_save(save_json: &str) -> Result<String, JsValue> {
 
 // Re-export for TypeScript type generation if needed
 #[wasm_bindgen]
+#[must_use]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }

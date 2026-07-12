@@ -585,3 +585,162 @@ button.ghost {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+/* Endgame + economy */
+.negative {
+  color: var(--danger);
+}
+
+#endscreen .onboarding-card {
+  text-align: center;
+}
+
+#endscreen.victory h2 {
+  color: var(--success);
+}
+
+#endscreen.game-over h2 {
+  color: var(--danger);
+}
+
+.orbit-spec {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.orbit-spec.ok {
+  color: var(--success);
+}
+
+.orbit-spec.bad {
+  color: var(--danger);
+}
+
+.chip.repeat {
+  background: rgba(255, 200, 80, 0.15);
+  color: var(--warn);
+}
+
+/* Gauges + runway */
+.stat.gauge .progress-bar {
+  margin-top: 4px;
+}
+
+.progress-fill.danger {
+  background: var(--danger);
+}
+
+.progress-fill.warn {
+  background: var(--warn);
+}
+
+.alert.danger {
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
+.orbit-spec.warn {
+  color: var(--warn);
+}
+
+/* Time-accel presets */
+.accel-row {
+  display: flex;
+  gap: 4px;
+}
+
+.accel-btn {
+  flex: 1;
+  padding: 5px 4px;
+  font-size: 0.75rem;
+  width: auto;
+}
+
+.accel-btn.active {
+  background: var(--accent, #4da3ff);
+  color: #06101f;
+  font-weight: 700;
+}
+
+/* Tab attention dot */
+.tab.attention::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  vertical-align: middle;
+}
+
+/* Camera hint */
+.camera-hint {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: rgba(8, 14, 26, 0.85);
+  border: 1px solid rgba(120, 160, 220, 0.3);
+  color: var(--muted, #9db2ce);
+  font-size: 0.85rem;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.camera-hint.hidden {
+  display: none;
+}
+
+/* Globe legend */
+.globe-legend {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(8, 14, 26, 0.8);
+  border: 1px solid rgba(120, 160, 220, 0.25);
+  font-size: 0.72rem;
+  color: var(--muted, #9db2ce);
+  display: grid;
+  gap: 4px;
+  z-index: 4;
+}
+
+.globe-legend.hidden {
+  display: none;
+}
+
+.lg-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.lg-line {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.lg-line.dashed {
+  background-image: linear-gradient(90deg, currentColor 60%, transparent 40%);
+  background-size: 6px 2px;
+}
+
+.fatal-error {
+  color: var(--danger);
+  padding: 2rem;
+  font-family: monospace;
+}

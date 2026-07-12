@@ -1,6 +1,6 @@
 #![cfg(feature = "sgp4")]
 
-use satelliteinc_core::{orbit::TlePropagator, SimState};
+use satelliteinc_core::{SimState, orbit::TlePropagator};
 
 mod common;
 use common::load_content;
@@ -25,7 +25,7 @@ fn tle_catalog_propagates_iss() {
         "ISS orbital speed ~7.66 km/s, got {speed}"
     );
 
-    let sim = SimState::new(content);
+    let sim = SimState::new(content).unwrap();
     assert!(!sim.tle_propagators.is_empty(), "ISS TLE should load");
 
     let snap = sim.snapshot();

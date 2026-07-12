@@ -34,6 +34,8 @@ pub enum PlayerAction {
     },
     StartHohmann,
     CompleteHohmann,
+    /// Retire the on-orbit satellite for a partial salvage refund.
+    Decommission,
     SetPayloadMode {
         mode: PayloadMode,
     },

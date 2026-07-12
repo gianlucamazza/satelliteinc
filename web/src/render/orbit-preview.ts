@@ -1,13 +1,14 @@
 import * as THREE from "three";
-import { earthRadiusRender, kmToRender } from "./coords.ts";
+import { kmToRender } from "./coords.ts";
 
 /** Presentation-only circular orbit preview for design phase. */
 export function designOrbitPoints(
+  bodyRadiusRenderUnits: number,
   altitudeKm: number,
   inclinationDeg: number,
   samples = 96,
 ): THREE.Vector3[] {
-  const r = earthRadiusRender() + kmToRender(altitudeKm);
+  const r = bodyRadiusRenderUnits + kmToRender(altitudeKm);
   const inc = (inclinationDeg * Math.PI) / 180;
   const points: THREE.Vector3[] = [];
   for (let i = 0; i <= samples; i++) {

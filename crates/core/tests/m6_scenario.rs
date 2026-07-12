@@ -1,4 +1,4 @@
-use satelliteinc_core::{action::PlayerAction, company::GameMode, SimState};
+use satelliteinc_core::{SimState, action::PlayerAction, company::GameMode};
 
 mod common;
 use common::load_content;
@@ -6,7 +6,7 @@ use common::load_content;
 #[test]
 fn load_scenario_sets_mode_and_contract() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::LoadScenario {
         scenario_id: "ops_challenge".into(),
@@ -14,7 +14,7 @@ fn load_scenario_sets_mode_and_contract() {
     .unwrap();
 
     assert_eq!(sim.company.game_mode, GameMode::Campaign);
-    assert_eq!(sim.company.reputation, 18.0);
+    assert_eq!(sim.company.reputation, 20.0);
     assert_eq!(
         sim.company
             .active_contract

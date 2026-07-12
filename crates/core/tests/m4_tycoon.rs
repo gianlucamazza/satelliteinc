@@ -1,4 +1,4 @@
-use satelliteinc_core::{action::PlayerAction, company::GameMode, SimState};
+use satelliteinc_core::{SimState, action::PlayerAction, company::GameMode};
 
 mod common;
 use common::load_content;
@@ -6,7 +6,7 @@ use common::load_content;
 #[test]
 fn rd_unlocks_smallsat_and_marketplace_gates_contracts() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::SetGameMode {
         mode: "campaign".into(),
@@ -31,31 +31,34 @@ fn rd_unlocks_smallsat_and_marketplace_gates_contracts() {
     .unwrap();
 
     assert!(sim.company.is_bus_unlocked("smallsat"));
-    assert!(sim
-        .company
-        .unlocked_tech
-        .contains(&"smallsat_bus".to_string()));
+    assert!(
+        sim.company
+            .unlocked_tech
+            .contains(&"smallsat_bus".to_string())
+    );
 }
 
 #[test]
 fn tech_purchase_requires_cash_and_prerequisites() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     // Missing prerequisite (smallsat_bus requires comms_mk2).
-    assert!(sim
-        .apply_action(PlayerAction::PurchaseTech {
+    assert!(
+        sim.apply_action(PlayerAction::PurchaseTech {
             tech_id: "smallsat_bus".into(),
         })
-        .is_err());
+        .is_err()
+    );
 
     // Insufficient cash.
     sim.company.cash_usd = 10_000.0;
-    assert!(sim
-        .apply_action(PlayerAction::PurchaseTech {
+    assert!(
+        sim.apply_action(PlayerAction::PurchaseTech {
             tech_id: "comms_mk2".into(),
         })
-        .is_err());
+        .is_err()
+    );
     assert!(sim.company.unlocked_tech.is_empty());
     assert!(
         (sim.company.cash_usd - 10_000.0).abs() < 1e-9,
@@ -66,7 +69,7 @@ fn tech_purchase_requires_cash_and_prerequisites() {
 #[test]
 fn contract_deadline_expiry_fails_contract_and_costs_reputation() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::SelectBus {
         bus_id: "cubesat".into(),

@@ -1,9 +1,9 @@
-use crate::constants::EARTH_RADIUS_KM;
+use crate::body::CelestialBody;
 use crate::error::SimError;
 use crate::event::SimEvent;
 use crate::orbit::{
-    apply_impulsive_burn, at_apogee, at_perigee, eci_position_km, eci_velocity_km_s, hohmann_plan,
-    propellant_for_delta_v, BurnDirection, HohmannPlan,
+    BurnDirection, HohmannPlan, apply_impulsive_burn, at_apogee, at_perigee, eci_position_km,
+    eci_velocity_km_s, hohmann_plan, propellant_for_delta_v,
 };
 use crate::spacecraft::{HohmannPlanSnapshot, PendingHohmann, Spacecraft};
 
@@ -15,10 +15,12 @@ pub struct ManeuverResult {
 }
 
 pub fn execute_prograde_burn(
+    body: &CelestialBody,
     craft: &mut Spacecraft,
     sim_seconds: f64,
     delta_v_km_s: f64,
     retrograde: bool,
+    isp_mult: f64,
 ) -> Result<ManeuverResult, SimError> {
     let elements = craft
         .elements
@@ -28,9 +30,15 @@ pub fn execute_prograde_burn(
     } else {
         BurnDirection::Prograde
     };
-    let prop_used = spend_propellant(craft, delta_v_km_s)?;
-    let new_elements = apply_impulsive_burn(&elements, sim_seconds, delta_v_km_s, direction)?;
-    let alt = new_elements.semi_major_axis_km - EARTH_RADIUS_KM;
+    let prop_used = spend_propellant(craft, delta_v_km_s, isp_mult)?;
+    let new_elements = apply_impulsive_burn(
+        body.mu_km3_s2,
+        &elements,
+        sim_seconds,
+        delta_v_km_s,
+        direction,
+    )?;
+    let alt = new_elements.semi_major_axis_km - body.radius_km;
     craft.elements = Some(new_elements);
     craft.total_delta_v_used_km_s += delta_v_km_s;
     let label = if retrograde {
@@ -51,12 +59,16 @@ pub fn execute_prograde_burn(
     })
 }
 
-pub fn spend_propellant(craft: &mut Spacecraft, delta_v_km_s: f64) -> Result<f64, SimError> {
+pub fn spend_propellant(
+    craft: &mut Spacecraft,
+    delta_v_km_s: f64,
+    isp_mult: f64,
+) -> Result<f64, SimError> {
     let needed = propellant_for_delta_v(
         delta_v_km_s,
         craft.dry_mass_kg(),
         craft.propellant_kg,
-        craft.bus.isp_s,
+        craft.bus.isp_s * isp_mult,
     );
     if needed > craft.propellant_kg + 1e-6 {
         return Err(SimError::InvalidAction(format!(
@@ -68,9 +80,11 @@ pub fn spend_propellant(craft: &mut Spacecraft, delta_v_km_s: f64) -> Result<f64
 }
 
 pub fn start_hohmann(
+    body: &CelestialBody,
     craft: &mut Spacecraft,
     sim_seconds: f64,
     target_altitude_km: f64,
+    isp_mult: f64,
 ) -> Result<ManeuverResult, SimError> {
     if craft.pending_hohmann.is_some() {
         return Err(SimError::InvalidAction(
@@ -81,11 +95,11 @@ pub fn start_hohmann(
         .elements
         .ok_or_else(|| SimError::InvalidAction("no orbit".into()))?;
     let r1 = elements.semi_major_axis_km;
-    let r2 = EARTH_RADIUS_KM + target_altitude_km;
-    let plan = hohmann_plan(r1, r2, target_altitude_km)?;
+    let r2 = body.radius_km + target_altitude_km;
+    let plan = hohmann_plan(body.mu_km3_s2, body.radius_km, r1, r2, target_altitude_km)?;
 
-    let pos = eci_position_km(&elements, sim_seconds);
-    let vel = eci_velocity_km_s(&elements, sim_seconds);
+    let pos = eci_position_km(body.mu_km3_s2, &elements, sim_seconds);
+    let vel = eci_velocity_km_s(body.mu_km3_s2, &elements, sim_seconds);
 
     let at_right_apsis = if plan.raising {
         at_perigee(&elements, pos, vel)
@@ -99,8 +113,9 @@ pub fn start_hohmann(
         )));
     }
 
-    let prop_used = spend_propellant(craft, plan.burn1_dv_km_s)?;
+    let prop_used = spend_propellant(craft, plan.burn1_dv_km_s, isp_mult)?;
     let new_elements = apply_impulsive_burn(
+        body.mu_km3_s2,
         &elements,
         sim_seconds,
         plan.burn1_dv_km_s,
@@ -132,8 +147,10 @@ pub fn start_hohmann(
 }
 
 pub fn complete_hohmann(
+    body: &CelestialBody,
     craft: &mut Spacecraft,
     sim_seconds: f64,
+    isp_mult: f64,
 ) -> Result<ManeuverResult, SimError> {
     let pending = craft
         .pending_hohmann
@@ -144,8 +161,8 @@ pub fn complete_hohmann(
         .elements
         .ok_or_else(|| SimError::InvalidAction("no orbit".into()))?;
 
-    let pos = eci_position_km(&elements, sim_seconds);
-    let vel = eci_velocity_km_s(&elements, sim_seconds);
+    let pos = eci_position_km(body.mu_km3_s2, &elements, sim_seconds);
+    let vel = eci_velocity_km_s(body.mu_km3_s2, &elements, sim_seconds);
 
     let at_right_apsis = if plan.raising {
         at_apogee(&elements, pos, vel)
@@ -159,14 +176,15 @@ pub fn complete_hohmann(
         )));
     }
 
-    let prop_used = spend_propellant(craft, plan.burn2_dv_km_s)?;
+    let prop_used = spend_propellant(craft, plan.burn2_dv_km_s, isp_mult)?;
     let new_elements = apply_impulsive_burn(
+        body.mu_km3_s2,
         &elements,
         sim_seconds,
         plan.burn2_dv_km_s,
         plan.burn2_direction,
     )?;
-    let alt = new_elements.semi_major_axis_km - EARTH_RADIUS_KM;
+    let alt = new_elements.semi_major_axis_km - body.radius_km;
     craft.elements = Some(new_elements);
     craft.total_delta_v_used_km_s += plan.burn2_dv_km_s;
     craft.pending_hohmann = None;
@@ -190,6 +208,7 @@ pub fn complete_hohmann(
 }
 
 pub fn preview_hohmann(
+    body: &CelestialBody,
     craft: &Spacecraft,
     target_altitude_km: f64,
 ) -> Result<HohmannPlan, SimError> {
@@ -197,8 +216,8 @@ pub fn preview_hohmann(
         .elements
         .ok_or_else(|| SimError::InvalidAction("no orbit".into()))?;
     let r1 = elements.semi_major_axis_km;
-    let r2 = EARTH_RADIUS_KM + target_altitude_km;
-    hohmann_plan(r1, r2, target_altitude_km)
+    let r2 = body.radius_km + target_altitude_km;
+    hohmann_plan(body.mu_km3_s2, body.radius_km, r1, r2, target_altitude_km)
 }
 
 fn reconstruct_plan(snap: &HohmannPlanSnapshot) -> HohmannPlan {

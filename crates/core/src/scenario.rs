@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+use crate::SimState;
 use crate::company::{ActiveContract, CompanyState, GameMode};
 use crate::error::SimError;
 use crate::spacecraft::Spacecraft;
-use crate::SimState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioTemplate {
@@ -56,7 +56,7 @@ impl SimState {
         };
 
         self.clock = crate::clock::SimClock::new();
-        self.pass_active.clear();
+        self.pass_active.fill(false);
         self.event_queue.clear();
 
         let mut company = CompanyState::new(
@@ -79,6 +79,7 @@ impl SimState {
             self.company.active_contract = Some(ActiveContract::from_template(
                 &template,
                 self.clock.sim_seconds,
+                false,
             ));
         }
 

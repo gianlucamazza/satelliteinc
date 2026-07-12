@@ -13,7 +13,9 @@ pub struct KeplerElements {
 }
 
 impl KeplerElements {
-    pub fn altitude_km(&self) -> f64 {
-        self.semi_major_axis_km - crate::constants::EARTH_RADIUS_KM
+    /// Mean altitude above a body of the given radius.
+    #[must_use]
+    pub fn altitude_km(&self, body_radius_km: f64) -> f64 {
+        self.semi_major_axis_km - body_radius_km
     }
 }

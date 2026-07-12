@@ -1,4 +1,111 @@
 {
+  "epoch_utc": "2026-03-20T00:00:00Z",
+  "bodies": [
+    {
+      "id": "sun",
+      "name": "Sun",
+      "mu_km3_s2": 132712440018.0,
+      "radius_km": 695700.0,
+      "rotation_rad_s": 2.8653290845717256e-6,
+      "min_parking_altitude_km": 1000000.0,
+      "max_parking_altitude_km": 10000000.0
+    },
+    {
+      "id": "earth",
+      "name": "Earth",
+      "mu_km3_s2": 398600.4418,
+      "radius_km": 6371.0,
+      "rotation_rad_s": 7.2921159e-5,
+      "parent": "sun",
+      "orbit": {
+        "semi_major_axis_km": 149598261.2,
+        "eccentricity": 0.01671123,
+        "inclination_deg": 0.0,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 102.93768193,
+        "mean_anomaly_epoch_deg": 75.20127155828172
+      },
+      "min_parking_altitude_km": 200.0,
+      "max_parking_altitude_km": 2000.0,
+      "texture": "earth"
+    },
+    {
+      "id": "moon",
+      "name": "The Moon",
+      "mu_km3_s2": 4902.800066,
+      "radius_km": 1737.4,
+      "rotation_rad_s": 2.6616995272150692e-6,
+      "parent": "earth",
+      "orbit": {
+        "semi_major_axis_km": 384400.0,
+        "eccentricity": 0.0549,
+        "inclination_deg": 5.145,
+        "raan_deg": 125.08,
+        "arg_periapsis_deg": 318.15,
+        "mean_anomaly_epoch_deg": 272.40650717499375
+      },
+      "min_parking_altitude_km": 30.0,
+      "max_parking_altitude_km": 1500.0,
+      "texture": "moon"
+    },
+    {
+      "id": "venus",
+      "name": "Venus",
+      "mu_km3_s2": 324858.592,
+      "radius_km": 6051.8,
+      "rotation_rad_s": -2.992398738488947e-7,
+      "parent": "sun",
+      "orbit": {
+        "semi_major_axis_km": 108209475.3,
+        "eccentricity": 0.00677672,
+        "inclination_deg": 3.39467605,
+        "raan_deg": 76.67984255,
+        "arg_periapsis_deg": 54.92262463,
+        "mean_anomaly_epoch_deg": 269.97480961
+      },
+      "min_parking_altitude_km": 300.0,
+      "max_parking_altitude_km": 10000.0,
+      "texture": "venus"
+    },
+    {
+      "id": "mars",
+      "name": "Mars",
+      "mu_km3_s2": 42828.375214,
+      "radius_km": 3389.5,
+      "rotation_rad_s": 7.088235959185674e-5,
+      "parent": "sun",
+      "orbit": {
+        "semi_major_axis_km": 227943824.8,
+        "eccentricity": 0.0933941,
+        "inclination_deg": 1.84969142,
+        "raan_deg": 49.55953891,
+        "arg_periapsis_deg": 286.4968315,
+        "mean_anomaly_epoch_deg": 356.743464
+      },
+      "min_parking_altitude_km": 250.0,
+      "max_parking_altitude_km": 20000.0,
+      "texture": "mars"
+    },
+    {
+      "id": "jupiter",
+      "name": "Jupiter",
+      "mu_km3_s2": 126686534.0,
+      "radius_km": 69911.0,
+      "rotation_rad_s": 1.7585181380295513e-4,
+      "parent": "sun",
+      "orbit": {
+        "semi_major_axis_km": 778340817.0,
+        "eccentricity": 0.04838624,
+        "inclination_deg": 1.30439695,
+        "raan_deg": 100.47390909,
+        "arg_periapsis_deg": 274.25457074,
+        "mean_anomaly_epoch_deg": 95.18272591
+      },
+      "min_parking_altitude_km": 400000.0,
+      "max_parking_altitude_km": 2000000.0,
+      "texture": "jupiter"
+    }
+  ],
   "buses": [
     {
       "id": "cubesat",
@@ -12,6 +119,7 @@
       "launch_cost_usd": 120000,
       "propellant_kg": 0.5,
       "isp_s": 220.0,
+      "ops_cost_usd_per_day": 4000,
       "unlocked_by_default": true
     },
     {
@@ -26,6 +134,7 @@
       "launch_cost_usd": 200000,
       "propellant_kg": 5.0,
       "isp_s": 250.0,
+      "ops_cost_usd_per_day": 9000,
       "unlocked_by_default": true
     },
     {
@@ -40,6 +149,7 @@
       "launch_cost_usd": 280000,
       "propellant_kg": 12.0,
       "isp_s": 310.0,
+      "ops_cost_usd_per_day": 15000,
       "unlocked_by_default": false
     }
   ],
@@ -50,7 +160,7 @@
       "latitude_deg": 78.2306,
       "longitude_deg": 15.3911,
       "min_elevation_deg": 5.0,
-      "bandwidth_mbps": 80.0
+      "bandwidth_mbps": 24.0
     },
     {
       "id": "fairbanks",
@@ -58,7 +168,7 @@
       "latitude_deg": 64.8378,
       "longitude_deg": -147.7164,
       "min_elevation_deg": 5.0,
-      "bandwidth_mbps": 60.0
+      "bandwidth_mbps": 12.0
     },
     {
       "id": "chile",
@@ -66,7 +176,7 @@
       "latitude_deg": -33.4489,
       "longitude_deg": -70.6693,
       "min_elevation_deg": 10.0,
-      "bandwidth_mbps": 40.0
+      "bandwidth_mbps": 8.0
     },
     {
       "id": "kiruna",
@@ -74,7 +184,7 @@
       "latitude_deg": 67.8558,
       "longitude_deg": 20.2253,
       "min_elevation_deg": 5.0,
-      "bandwidth_mbps": 70.0
+      "bandwidth_mbps": 16.0
     }
   ],
   "contracts": [
@@ -91,12 +201,13 @@
     {
       "id": "comms_relay",
       "name": "Comms Relay — Beta",
-      "description": "Downlink 1 GB within 10 days for relay test.",
+      "description": "Downlink 1 GB within 10 days for relay test. Requires an orbit at or above 700 km.",
       "downlink_mb": 1024.0,
       "deadline_days": 10.0,
       "payout_usd": 520000,
       "reputation_required": 15.0,
-      "reputation_reward": 12.0
+      "reputation_reward": 12.0,
+      "min_altitude_km": 700.0
     },
     {
       "id": "science_multi",
@@ -112,22 +223,24 @@
     {
       "id": "rapid_eye",
       "name": "Rapid Eye — Scout",
-      "description": "Fast turnaround: 300 MB in 4 days.",
+      "description": "Fast turnaround: 300 MB in 4 days. Low orbit required — at or below 450 km.",
       "downlink_mb": 300.0,
       "deadline_days": 4.0,
       "payout_usd": 280000,
       "reputation_required": 5.0,
-      "reputation_reward": 6.0
+      "reputation_reward": 6.0,
+      "max_altitude_km": 450.0
     },
     {
       "id": "polar_watch",
       "name": "Polar Watch",
-      "description": "High-inclination monitoring: 1.5 GB in 12 days.",
+      "description": "High-inclination monitoring: 1.5 GB in 12 days. Requires inclination of 80 degrees or more.",
       "downlink_mb": 1536.0,
       "deadline_days": 12.0,
       "payout_usd": 680000,
       "reputation_required": 22.0,
-      "reputation_reward": 15.0
+      "reputation_reward": 15.0,
+      "min_inclination_deg": 80.0
     }
   ],
   "tech_tree": [
@@ -158,6 +271,38 @@
       "unlocks_bus": "smallsat",
       "comms_multiplier": 1.0,
       "solar_multiplier": 1.0
+    },
+    {
+      "id": "comms_mk3",
+      "name": "Comms Mk III",
+      "description": "Ka-band experiment (+20% downlink rate).",
+      "cost_usd": 130000,
+      "requires": ["comms_mk2"],
+      "comms_multiplier": 1.2
+    },
+    {
+      "id": "propulsion_mk2",
+      "name": "Propulsion Mk II",
+      "description": "High-efficiency thruster (+15% Isp).",
+      "cost_usd": 90000,
+      "requires": ["solar_mk2"],
+      "isp_multiplier": 1.15
+    },
+    {
+      "id": "redundancy_mk1",
+      "name": "Redundant Avionics",
+      "description": "Anomalies strike 1.5x less often.",
+      "cost_usd": 50000,
+      "requires": [],
+      "anomaly_mtbf_multiplier": 1.5
+    },
+    {
+      "id": "redundancy_mk2",
+      "name": "Fault-Tolerant Bus",
+      "description": "Anomalies rarer still (stacks with Redundant Avionics).",
+      "cost_usd": 110000,
+      "requires": ["redundancy_mk1"],
+      "anomaly_mtbf_multiplier": 1.6
     }
   ],
   "tle_catalog": [
@@ -175,7 +320,7 @@
       "description": "Standard campaign: limited cash, reputation gates, one bus unlocked.",
       "game_mode": "campaign",
       "starting_cash": 450000,
-      "starting_reputation": 10,
+      "starting_reputation": 20,
       "bus_id": "cubesat",
       "contract_id": "earth_imaging",
       "altitude_km": 400,
@@ -195,10 +340,10 @@
     {
       "id": "ops_challenge",
       "name": "Ops Challenge",
-      "description": "Campaign with comms relay contract pre-accepted — plan multi-station passes.",
+      "description": "Campaign with comms relay pre-accepted: raise your orbit to 700 km with a Hohmann transfer to start accruing progress.",
       "game_mode": "campaign",
       "starting_cash": 420000,
-      "starting_reputation": 18,
+      "starting_reputation": 20,
       "bus_id": "microsat",
       "contract_id": "comms_relay",
       "altitude_km": 450,

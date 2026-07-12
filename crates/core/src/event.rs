@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::company::GameOutcome;
 use crate::ops::AnomalyType;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,5 +62,16 @@ pub enum SimEvent {
     ReputationChanged {
         delta: f64,
         new_value: f64,
+    },
+    Decommissioned {
+        salvage_usd: f64,
+    },
+    GameWon,
+    GameOver {
+        reason: GameOutcome,
+    },
+    /// One-shot warning when cash crosses below zero.
+    CashNegative {
+        cash_usd: f64,
     },
 }

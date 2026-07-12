@@ -10,19 +10,75 @@ import {
   simStep,
 } from "./sim/bridge.ts";
 import type { GameContent, SimEvent, Snapshot } from "./types.ts";
+import { confirmModal } from "./ui/modal.ts";
 import { Onboarding } from "./ui/onboarding.ts";
-import { HudPanel } from "./ui/panel.ts";
+import { ACCEL_PRESETS, HudPanel, type HudTab } from "./ui/panel.ts";
 
 const content = gameContent as GameContent;
 const DEBUG = new URLSearchParams(location.search).has("debug");
+const SETTINGS_KEY = "satelliteinc_settings";
+
+interface Settings {
+  autoDownlink: boolean;
+  showTleRefs: boolean;
+  showLegend: boolean;
+  timeAccelBeforePause: number;
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function loadSettings(): Settings {
+  const defaults: Settings = {
+    autoDownlink: true,
+    showTleRefs: true,
+    showLegend: true,
+    timeAccelBeforePause: 100,
+  };
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw
+      ? { ...defaults, ...(JSON.parse(raw) as Partial<Settings>) }
+      : defaults;
+  } catch {
+    return defaults;
+  }
+}
 
 async function main(): Promise<void> {
   const loadingEl = document.getElementById("loading")!;
   const canvas = document.getElementById("globe") as HTMLCanvasElement;
 
-  let autoDownlink = true;
-  let showTleRefs = true;
+  const settings = loadSettings();
+  let autoDownlink = settings.autoDownlink;
+  let showTleRefs = settings.showTleRefs;
+  let showLegend = settings.showLegend;
+  let timeAccelBeforePause = settings.timeAccelBeforePause;
   let snapshot: Snapshot | null = null;
+
+  function saveSettings(): void {
+    try {
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({
+          autoDownlink,
+          showTleRefs,
+          showLegend,
+          timeAccelBeforePause,
+        }),
+      );
+    } catch {
+      // Storage unavailable (private mode) — settings just won't persist.
+    }
+  }
+
+  function applyLegendVisibility(): void {
+    document
+      .getElementById("globe-legend")
+      ?.classList.toggle("hidden", !showLegend);
+  }
+  applyLegendVisibility();
 
   /** Apply a sim action; on rejection surface the error instead of throwing out of the handler. */
   function runAction(
@@ -34,15 +90,17 @@ async function main(): Promise<void> {
       panel.update(snapshot);
       return true;
     } catch (e) {
-      panel.logError(`${errorLabel}: ${e}`);
+      panel.logError(`${errorLabel}: ${errorText(e)}`);
       return false;
     }
   }
 
   const globe = new GlobeRenderer(canvas, {
     onStationSelect: (stationId) => {
-      if (!snapshot?.spacecraft || snapshot.spacecraft.phase !== "OnOrbit")
+      if (snapshot?.spacecraft?.phase !== "OnOrbit") {
+        panel.showToast("Launch first to select a downlink station", "info");
         return;
+      }
       if (
         runAction(
           { type: "select_downlink_station", station_id: stationId },
@@ -50,7 +108,7 @@ async function main(): Promise<void> {
         )
       ) {
         panel.logEvent(`Downlink station: ${stationId}`, "pass");
-        panel.setTab("ops");
+        panel.markTabAttention("ops");
       }
     },
     showTleRefs: () => showTleRefs,
@@ -82,7 +140,7 @@ async function main(): Promise<void> {
         panel.update(snapshot);
         panel.logEvent("Contract accepted", "contract");
       } catch (e) {
-        panel.logError(`Contract failed: ${e}`);
+        panel.logError(`Contract failed: ${errorText(e)}`);
       }
     },
     onLaunch: () => {
@@ -94,15 +152,19 @@ async function main(): Promise<void> {
           "Satellite on orbit — collect data in sunlight",
           "success",
         );
-        panel.setTab("ops");
+        panel.markTabAttention("ops");
       } catch (e) {
-        panel.logError(`Launch failed: ${e}`);
+        panel.logError(`Launch failed: ${errorText(e)}`);
       }
     },
     onToggleDownlink: (active) => {
       runAction({ type: "set_downlink", active }, "Downlink toggle failed");
     },
     onTimeAccel: (multiplier) => {
+      if (multiplier > 0) {
+        timeAccelBeforePause = multiplier;
+        saveSettings();
+      }
       runAction({ type: "set_time_accel", multiplier }, "Time accel failed");
     },
     onProgradeBurn: (deltaV) => {
@@ -114,7 +176,7 @@ async function main(): Promise<void> {
           "contract",
         );
       } catch (e) {
-        panel.logError(`Burn failed: ${e}`);
+        panel.logError(`Burn failed: ${errorText(e)}`);
       }
     },
     onRetrogradeBurn: (deltaV) => {
@@ -126,7 +188,7 @@ async function main(): Promise<void> {
           "contract",
         );
       } catch (e) {
-        panel.logError(`Burn failed: ${e}`);
+        panel.logError(`Burn failed: ${errorText(e)}`);
       }
     },
     onSetManeuverTarget: (altitude) => {
@@ -141,7 +203,7 @@ async function main(): Promise<void> {
         panel.update(snapshot);
         panel.logEvent("Hohmann burn 1 — coast to next apsis", "contract");
       } catch (e) {
-        panel.logError(`Hohmann failed: ${e}`);
+        panel.logError(`Hohmann failed: ${errorText(e)}`);
       }
     },
     onCompleteHohmann: () => {
@@ -151,7 +213,7 @@ async function main(): Promise<void> {
         panel.logEvent("Hohmann transfer complete!", "contract");
         panel.showToast("Orbit circularized", "success");
       } catch (e) {
-        panel.logError(`Circularize failed: ${e}`);
+        panel.logError(`Circularize failed: ${errorText(e)}`);
       }
     },
     onSelectDownlinkStation: (stationId) => {
@@ -180,19 +242,55 @@ async function main(): Promise<void> {
         panel.logEvent(`Purchased: ${techId}`, "contract");
         panel.showToast("R&D unlocked", "success");
       } catch (e) {
-        panel.logError(`R&D failed: ${e}`);
+        panel.logError(`R&D failed: ${errorText(e)}`);
       }
     },
     onSetGameMode: (mode) => {
       runAction({ type: "set_game_mode", mode }, "Game mode failed");
     },
+    onDecommission: (salvageUsd) => {
+      void confirmModal(
+        "Decommission satellite?",
+        `You'll receive $${salvageUsd.toLocaleString()} salvage and return to the design phase. Any active contract keeps its deadline.`,
+        "Decommission",
+      ).then((confirmed) => {
+        if (!confirmed) return;
+        if (runAction({ type: "decommission" }, "Decommission failed")) {
+          panel.logEvent("Satellite decommissioned", "contract");
+          panel.markTabAttention("mission");
+        }
+      });
+    },
+    onRestartCampaign: () => {
+      const scenarioId = content.scenarios?.[0]?.id ?? "campaign_start";
+      if (
+        runAction(
+          { type: "load_scenario", scenario_id: scenarioId },
+          "Restart failed",
+        )
+      ) {
+        panel.logEvent("Campaign restarted", "contract");
+        panel.setTab("mission");
+      }
+    },
+    onShowHelp: () => {
+      onboarding.show(true);
+    },
     onAutoDownlinkChange: (active) => {
       autoDownlink = active;
+      saveSettings();
     },
     onShowTleRefsChange: (active) => {
       showTleRefs = active;
       globe.setShowTleRefs(active);
+      saveSettings();
     },
+    onShowLegendChange: (active) => {
+      showLegend = active;
+      applyLegendVisibility();
+      saveSettings();
+    },
+    getShowLegend: () => showLegend,
     onLoadScenario: (scenarioId) => {
       try {
         snapshot = simAction({
@@ -202,9 +300,9 @@ async function main(): Promise<void> {
         panel.update(snapshot);
         panel.logEvent(`Scenario loaded: ${scenarioId}`, "contract");
         panel.showToast(`Scenario: ${scenarioId}`, "success");
-        panel.setTab("mission");
+        panel.markTabAttention("mission");
       } catch (e) {
-        panel.logError(`Scenario failed: ${e}`);
+        panel.logError(`Scenario failed: ${errorText(e)}`);
       }
     },
     onExportSave: () => {
@@ -214,7 +312,7 @@ async function main(): Promise<void> {
         panel.showToast("Save exported to browser storage", "success");
         panel.logEvent("Game saved");
       } catch (e) {
-        panel.logError(`Save failed: ${e}`);
+        panel.logError(`Save failed: ${errorText(e)}`);
       }
     },
     onImportSave: () => {
@@ -229,7 +327,7 @@ async function main(): Promise<void> {
         panel.showToast("Save imported", "success");
         panel.logEvent("Game loaded");
       } catch (e) {
-        panel.logError(`Load failed: ${e}`);
+        panel.logError(`Load failed: ${errorText(e)}`);
       }
     },
     getAutoDownlink: () => autoDownlink,
@@ -258,6 +356,65 @@ async function main(): Promise<void> {
 
   const onboarding = new Onboarding();
   onboarding.show();
+
+  // Keyboard shortcuts (skip while typing in a form control or a modal is up).
+  const TAB_KEYS: Record<string, HudTab> = {
+    "1": "mission",
+    "2": "ops",
+    "3": "orbit",
+    "4": "company",
+  };
+  window.addEventListener("keydown", (e) => {
+    const target = e.target as HTMLElement;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
+    const accel = snapshot?.time_accel ?? 1;
+    if (e.key === " ") {
+      e.preventDefault();
+      if (accel === 0) {
+        runAction(
+          { type: "set_time_accel", multiplier: timeAccelBeforePause },
+          "Resume failed",
+        );
+      } else {
+        timeAccelBeforePause = accel;
+        saveSettings();
+        runAction({ type: "set_time_accel", multiplier: 0 }, "Pause failed");
+      }
+    } else if (e.key === "+" || e.key === "=" || e.key === "-") {
+      const idx = ACCEL_PRESETS.findIndex((p) => p >= accel);
+      const cur = idx === -1 ? ACCEL_PRESETS.length - 1 : idx;
+      const next =
+        e.key === "-"
+          ? Math.max(0, cur - 1)
+          : Math.min(ACCEL_PRESETS.length - 1, cur + 1);
+      const multiplier = ACCEL_PRESETS[next]!;
+      if (multiplier > 0) {
+        timeAccelBeforePause = multiplier;
+        saveSettings();
+      }
+      runAction({ type: "set_time_accel", multiplier }, "Time accel failed");
+    } else if (TAB_KEYS[e.key]) {
+      panel.setTab(TAB_KEYS[e.key]!);
+    } else if (e.key.toLowerCase() === "d") {
+      if (snapshot?.spacecraft?.phase === "OnOrbit") {
+        runAction(
+          {
+            type: "set_downlink",
+            active: !snapshot.spacecraft.downlink_active,
+          },
+          "Downlink toggle failed",
+        );
+      }
+    } else if (e.key === "?") {
+      onboarding.show(true);
+    }
+  });
 
   let lastTime = performance.now();
 
@@ -293,6 +450,14 @@ async function main(): Promise<void> {
         return `R&D: ${ev.name}`;
       case "reputation_changed":
         return `Rep ${ev.delta >= 0 ? "+" : ""}${ev.delta.toFixed(0)} → ${ev.new_value.toFixed(0)}`;
+      case "decommissioned":
+        return `Decommissioned — +$${ev.salvage_usd.toLocaleString()} salvage`;
+      case "game_won":
+        return "VICTORY — all contracts complete!";
+      case "game_over":
+        return `GAME OVER — ${ev.reason === "bankrupt" ? "bankruptcy" : "reputation lost"}`;
+      case "cash_negative":
+        return "WARNING: cash is negative — bankruptcy at −$50k";
       default:
         return JSON.stringify(ev);
     }
@@ -317,6 +482,7 @@ async function main(): Promise<void> {
 
       if (
         autoDownlink &&
+        snapshot.phase !== "game_over" &&
         snapshot.spacecraft?.phase === "OnOrbit" &&
         snapshot.spacecraft.in_pass &&
         !snapshot.spacecraft.downlink_active &&
@@ -336,22 +502,26 @@ async function main(): Promise<void> {
         }
         if (ev.type === "contract_completed") {
           panel.showToast(msg, "success");
-          panel.setTab("mission");
+          panel.markTabAttention("mission");
         }
         if (ev.type === "anomaly_started") {
           panel.showToast(msg, "error");
-          panel.setTab("ops");
+          panel.markTabAttention("ops");
+        }
+        if (ev.type === "game_won") {
+          panel.showToast(msg, "success");
+        }
+        if (ev.type === "game_over" || ev.type === "cash_negative") {
+          panel.showToast(msg, "error");
         }
       }
 
-      if (snapshot) {
-        globe.update(snapshot);
-        panel.update(snapshot);
-      }
+      globe.update(snapshot);
+      panel.update(snapshot);
       globe.render();
     } catch (e) {
       console.error("frame error:", e);
-      panel.logError(`Sim error: ${e}`);
+      panel.logError(`Sim error: ${errorText(e)}`);
     } finally {
       requestAnimationFrame(frame);
     }
@@ -368,11 +538,11 @@ async function main(): Promise<void> {
   requestAnimationFrame(frame);
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err);
   document.getElementById("loading")?.classList.add("hidden");
   const pre = document.createElement("pre");
-  pre.style.cssText = "color:#ff6b6b;padding:2rem;font-family:monospace";
-  pre.textContent = `Failed to start: ${err}`;
+  pre.className = "fatal-error";
+  pre.textContent = `Failed to start: ${errorText(err)}`;
   document.body.replaceChildren(pre);
 });

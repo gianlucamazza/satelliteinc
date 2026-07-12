@@ -16,6 +16,7 @@ pub struct QueuedCommand {
 }
 
 impl QueuedCommand {
+    #[must_use]
     pub fn new(command: CommandType, station_id: String, sim_seconds: f64) -> Self {
         Self {
             command,
@@ -26,6 +27,7 @@ impl QueuedCommand {
 }
 
 /// Execute a queued command; returns human-readable result.
+#[must_use]
 pub fn execute_command(command: &CommandType) -> &'static str {
     match command {
         CommandType::RebootComms => "Comms subsystem rebooted",

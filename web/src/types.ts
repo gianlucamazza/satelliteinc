@@ -2,7 +2,11 @@ export type GamePhase =
   | "design"
   | "awaiting_launch"
   | "on_orbit"
-  | "contract_complete";
+  | "contract_complete"
+  | "victory"
+  | "game_over";
+
+export type GameOutcome = "victory" | "bankrupt" | "reputation_lost";
 
 export type CraftPhase = "Design" | "OnOrbit";
 export type GameMode = "sandbox" | "campaign";
@@ -28,6 +32,9 @@ export interface ActiveContract {
   reputation_reward: number;
   min_distinct_stations: number;
   stations_used: string[];
+  min_altitude_km: number | null;
+  max_altitude_km: number | null;
+  min_inclination_deg: number | null;
 }
 
 export interface ContractOffer {
@@ -39,7 +46,11 @@ export interface ContractOffer {
   payout_usd: number;
   reputation_required: number;
   min_distinct_stations: number;
+  min_altitude_km: number | null;
+  max_altitude_km: number | null;
+  min_inclination_deg: number | null;
   available: boolean;
+  repeat: boolean;
 }
 
 export interface HohmannPlanSnapshot {
@@ -68,17 +79,37 @@ export interface ReferenceSatellite {
   altitude_km: number;
 }
 
+/** A celestial body's state at snapshot time (positions in km). */
+export interface BodySnapshot {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  radius_km: number;
+  rotation_rad_s: number;
+  position_helio_km: [number, number, number];
+  position_parent_km: [number, number, number];
+  /** Unit vector from the body toward the sun (body-inertial frame). */
+  sun_direction: [number, number, number];
+  /** null for the sun (serialized infinity). */
+  soi_radius_km: number | null;
+  texture: string | null;
+}
+
 export interface SpacecraftSnapshot {
   name: string;
   bus_id: string;
   bus_name: string;
   phase: CraftPhase;
+  /** Central body of position_eci_km / elements (body-relative frame). */
+  body_id: string;
   position_eci_km: [number, number, number];
   velocity_eci_km_s: [number, number, number];
   elements: KeplerElements | null;
   orbit_trail_km: [number, number, number][];
   power_wh: number;
+  battery_wh_capacity: number;
   buffer_mb: number;
+  buffer_capacity_mb: number;
   downlink_active: boolean;
   in_sunlight: boolean;
   in_pass: boolean;
@@ -88,10 +119,13 @@ export interface SpacecraftSnapshot {
   target_inclination_deg: number;
   altitude_km: number;
   propellant_kg: number;
+  propellant_capacity_kg: number;
   delta_v_remaining_km_s: number;
   total_delta_v_used_km_s: number;
   pending_hohmann: PendingHohmann | null;
   at_apsis: boolean;
+  seconds_to_perigee: number | null;
+  seconds_to_apogee: number | null;
   hohmann_preview: HohmannPlanSnapshot | null;
   maneuver_target_altitude_km: number;
   payload_mode: PayloadMode;
@@ -113,6 +147,7 @@ export interface StationSnapshot {
 }
 
 export interface Snapshot {
+  bodies: BodySnapshot[];
   sim_seconds: number;
   sim_days: number;
   time_accel: number;
@@ -125,10 +160,13 @@ export interface Snapshot {
   unlocked_buses: string[];
   marketplace: ContractOffer[];
   active_contract: ActiveContract | null;
+  active_contract_orbit_ok: boolean | null;
   spacecraft: SpacecraftSnapshot | null;
   ground_stations: StationSnapshot[];
   reference_satellites: ReferenceSatellite[];
   phase: GamePhase;
+  outcome: GameOutcome | null;
+  ops_cost_usd_per_day: number;
 }
 
 export interface BusTemplate {
@@ -143,6 +181,7 @@ export interface BusTemplate {
   launch_cost_usd: number;
   propellant_kg: number;
   isp_s: number;
+  ops_cost_usd_per_day: number;
   unlocked_by_default?: boolean;
 }
 
@@ -155,6 +194,8 @@ export interface TechNode {
   unlocks_bus?: string | null;
   comms_multiplier: number;
   solar_multiplier: number;
+  isp_multiplier?: number;
+  anomaly_mtbf_multiplier?: number;
 }
 
 export interface ContractTemplate {
@@ -237,4 +278,8 @@ export type SimEvent =
       message: string;
     }
   | { type: "tech_purchased"; tech_id: string; name: string }
-  | { type: "reputation_changed"; delta: number; new_value: number };
+  | { type: "reputation_changed"; delta: number; new_value: number }
+  | { type: "decommissioned"; salvage_usd: number }
+  | { type: "game_won" }
+  | { type: "game_over"; reason: GameOutcome }
+  | { type: "cash_negative"; cash_usd: number };

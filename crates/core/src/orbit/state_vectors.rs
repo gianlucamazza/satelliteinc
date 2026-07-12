@@ -1,9 +1,10 @@
-use crate::constants::MU_EARTH;
 use crate::error::SimError;
 use crate::orbit::KeplerElements;
 
-/// Convert ECI state vector to Keplerian elements at `epoch_sim_seconds`.
+/// Convert a body-centered-inertial state vector to Keplerian elements at
+/// `epoch_sim_seconds`, for a body with gravitational parameter `mu_km3_s2`.
 pub fn elements_from_pv(
+    mu_km3_s2: f64,
     position_km: [f64; 3],
     velocity_km_s: [f64; 3],
     epoch_sim_seconds: f64,
@@ -24,19 +25,19 @@ pub fn elements_from_pv(
 
     let rv = dot(r, v);
     let e_vec = [
-        ((v_mag * v_mag - MU_EARTH / r_mag) * r[0] - rv * v[0]) / MU_EARTH,
-        ((v_mag * v_mag - MU_EARTH / r_mag) * r[1] - rv * v[1]) / MU_EARTH,
-        ((v_mag * v_mag - MU_EARTH / r_mag) * r[2] - rv * v[2]) / MU_EARTH,
+        ((v_mag * v_mag - mu_km3_s2 / r_mag) * r[0] - rv * v[0]) / mu_km3_s2,
+        ((v_mag * v_mag - mu_km3_s2 / r_mag) * r[1] - rv * v[1]) / mu_km3_s2,
+        ((v_mag * v_mag - mu_km3_s2 / r_mag) * r[2] - rv * v[2]) / mu_km3_s2,
     ];
     let e = norm(e_vec);
 
-    let energy = 0.5 * v_mag * v_mag - MU_EARTH / r_mag;
+    let energy = 0.5 * v_mag * v_mag - mu_km3_s2 / r_mag;
     if energy.abs() < 1e-12 {
         return Err(SimError::InvalidAction(
             "parabolic orbit not supported".into(),
         ));
     }
-    let semi_major_axis_km = -MU_EARTH / (2.0 * energy);
+    let semi_major_axis_km = -mu_km3_s2 / (2.0 * energy);
     if semi_major_axis_km <= 0.0 {
         return Err(SimError::InvalidAction(
             "hyperbolic orbit not supported".into(),
@@ -120,6 +121,7 @@ pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// True when position and velocity are near-perpendicular (apsis).
+#[must_use]
 pub fn at_apsis(position_km: [f64; 3], velocity_km_s: [f64; 3]) -> bool {
     let r = norm(position_km);
     let v = norm(velocity_km_s);
@@ -130,6 +132,7 @@ pub fn at_apsis(position_km: [f64; 3], velocity_km_s: [f64; 3]) -> bool {
 }
 
 /// True when at perigee (local minimum radius on elliptical arc).
+#[must_use]
 pub fn at_perigee(
     elements: &KeplerElements,
     position_km: [f64; 3],
@@ -144,6 +147,7 @@ pub fn at_perigee(
 }
 
 /// True when at apogee (local maximum radius).
+#[must_use]
 pub fn at_apogee(
     elements: &KeplerElements,
     position_km: [f64; 3],
@@ -162,16 +166,17 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
-    use crate::orbit::{circular_leo, eci_position_km, eci_velocity_km_s};
+    use crate::constants::{EARTH_RADIUS_KM, MU_EARTH};
+    use crate::orbit::{circular_orbit, eci_position_km, eci_velocity_km_s};
 
     #[test]
     fn pv_round_trip_preserves_position_circular_inclined() {
-        let elements = circular_leo(400.0, 51.6, 0.0);
+        let elements = circular_orbit(EARTH_RADIUS_KM, 400.0, 51.6, 0.0);
         let t = 1_234.0;
-        let r = eci_position_km(&elements, t);
-        let v = eci_velocity_km_s(&elements, t);
-        let back = elements_from_pv(r, v, t).unwrap();
-        let r2 = eci_position_km(&back, t);
+        let r = eci_position_km(MU_EARTH, &elements, t);
+        let v = eci_velocity_km_s(MU_EARTH, &elements, t);
+        let back = elements_from_pv(MU_EARTH, r, v, t).unwrap();
+        let r2 = eci_position_km(MU_EARTH, &back, t);
         for k in 0..3 {
             assert_relative_eq!(r2[k], r[k], epsilon = 1.0);
         }
@@ -179,10 +184,10 @@ mod tests {
 
     #[test]
     fn pv_round_trip_circular_leo() {
-        let elements = circular_leo(400.0, 51.6, 100.0);
-        let r = eci_position_km(&elements, 100.0);
-        let v = eci_velocity_km_s(&elements, 100.0);
-        let back = elements_from_pv(r, v, 100.0).unwrap();
+        let elements = circular_orbit(EARTH_RADIUS_KM, 400.0, 51.6, 100.0);
+        let r = eci_position_km(MU_EARTH, &elements, 100.0);
+        let v = eci_velocity_km_s(MU_EARTH, &elements, 100.0);
+        let back = elements_from_pv(MU_EARTH, r, v, 100.0).unwrap();
         assert_relative_eq!(
             back.semi_major_axis_km,
             elements.semi_major_axis_km,

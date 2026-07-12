@@ -1,4 +1,4 @@
-use satelliteinc_core::{action::PlayerAction, company::GameMode, SimState};
+use satelliteinc_core::{SimState, action::PlayerAction, company::GameMode};
 
 mod common;
 use common::load_content;
@@ -6,7 +6,7 @@ use common::load_content;
 #[test]
 fn sandbox_unlocks_all_buses_and_contracts() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::SetGameMode {
         mode: "sandbox".into(),
@@ -22,7 +22,7 @@ fn sandbox_unlocks_all_buses_and_contracts() {
 #[test]
 fn campaign_gates_contracts_by_reputation() {
     let content = load_content();
-    let sim = SimState::new(content);
+    let sim = SimState::new(content).unwrap();
     let market = sim.company.marketplace(&sim.content);
     let science = market
         .iter()
@@ -34,7 +34,7 @@ fn campaign_gates_contracts_by_reputation() {
 #[test]
 fn multi_station_contract_requires_distinct_stations() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::LoadScenario {
         scenario_id: "sandbox_lab".into(),

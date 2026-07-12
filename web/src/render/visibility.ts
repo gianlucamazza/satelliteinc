@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { earthRadiusRender } from "./coords.ts";
 
 function hudClipRightPx(): number {
   const hud = document.getElementById("hud");
@@ -20,31 +19,39 @@ export function isFacingCamera(
   return normal.dot(viewDir) > minDot;
 }
 
-/** True when a ray from camera to target intersects the Earth sphere before the target. */
-export function isOccludedByEarth(
+/**
+ * True when a ray from camera to target intersects the focus body's sphere
+ * (centered at the origin, radius in render units) before the target.
+ */
+export function isOccludedByBody(
   cameraPos: THREE.Vector3,
   target: THREE.Vector3,
+  bodyRadiusRenderUnits: number,
 ): boolean {
-  const earthR = earthRadiusRender();
   const dir = target.clone().sub(cameraPos);
   const dist = dir.length();
   if (dist < 1e-6) return false;
   dir.divideScalar(dist);
 
   const b = 2 * cameraPos.dot(dir);
-  const c = cameraPos.lengthSq() - earthR * earthR;
+  const c =
+    cameraPos.lengthSq() - bodyRadiusRenderUnits * bodyRadiusRenderUnits;
   const disc = b * b - 4 * c;
   if (disc < 0) return false;
   const t = (-b - Math.sqrt(disc)) / 2;
   return t > 0.01 && t < dist - 0.01;
 }
 
-/** Radial offset from Earth center along a surface direction. */
+/** Radial offset from the body center along a surface direction. */
 export function offsetAlongNormal(
   surfacePos: THREE.Vector3,
+  bodyRadiusRenderUnits: number,
   height: number,
 ): THREE.Vector3 {
-  return surfacePos.clone().normalize().multiplyScalar(earthRadiusRender() + height);
+  return surfacePos
+    .clone()
+    .normalize()
+    .multiplyScalar(bodyRadiusRenderUnits + height);
 }
 
 /** Hide labels that project into the HUD column on the left. */
@@ -61,9 +68,12 @@ export function isInHudColumn(
 export function shouldShowLabel(
   worldPos: THREE.Vector3,
   camera: THREE.Camera,
-  options: { occlude?: boolean } = {},
+  options: { occludeRadius?: number } = {},
 ): boolean {
-  if (options.occlude && isOccludedByEarth(camera.position, worldPos)) {
+  if (
+    options.occludeRadius !== undefined &&
+    isOccludedByBody(camera.position, worldPos, options.occludeRadius)
+  ) {
     return false;
   }
   if (!isFacingCamera(worldPos, camera)) return false;

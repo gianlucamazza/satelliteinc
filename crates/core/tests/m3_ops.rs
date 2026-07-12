@@ -1,5 +1,5 @@
 use satelliteinc_core::{
-    action::PlayerAction, ops::CommandType, spacecraft::PayloadMode, SimState,
+    SimState, action::PlayerAction, ops::CommandType, spacecraft::PayloadMode,
 };
 
 mod common;
@@ -8,7 +8,7 @@ use common::load_content;
 #[test]
 fn multi_station_pass_and_command_queue() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::SelectBus {
         bus_id: "cubesat".into(),
@@ -64,7 +64,7 @@ fn multi_station_pass_and_command_queue() {
 #[test]
 fn anomaly_schedule_independent_of_frame_cadence() {
     fn run(real_dt: f64, steps: usize) -> Vec<satelliteinc_core::ops::AnomalyType> {
-        let mut sim = SimState::new(load_content());
+        let mut sim = SimState::new(load_content()).unwrap();
         sim.apply_action(PlayerAction::SelectBus {
             bus_id: "cubesat".into(),
         })
@@ -101,7 +101,7 @@ fn buffer_corruption_expires_and_does_not_block_future_anomalies() {
     use satelliteinc_core::ops::{ActiveAnomaly, AnomalyType};
 
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::SelectBus {
         bus_id: "cubesat".into(),

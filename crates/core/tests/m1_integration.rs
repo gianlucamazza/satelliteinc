@@ -1,4 +1,4 @@
-use satelliteinc_core::{action::PlayerAction, SimEvent, SimState};
+use satelliteinc_core::{SimEvent, SimState, action::PlayerAction};
 
 mod common;
 use common::load_content;
@@ -6,7 +6,7 @@ use common::load_content;
 #[test]
 fn m1_vertical_slice_completes_contract() {
     let content = load_content();
-    let mut sim = SimState::new(content);
+    let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::SelectBus {
         bus_id: "cubesat".into(),
@@ -29,8 +29,8 @@ fn m1_vertical_slice_completes_contract() {
     for _ in 0..200_000 {
         // Image in sunlight; downlink only when buffer has data and in pass
         let snap = sim.snapshot();
-        let in_pass = snap.spacecraft.as_ref().map(|c| c.in_pass).unwrap_or(false);
-        let buffer = snap.spacecraft.as_ref().map(|c| c.buffer_mb).unwrap_or(0.0);
+        let in_pass = snap.spacecraft.as_ref().is_some_and(|c| c.in_pass);
+        let buffer = snap.spacecraft.as_ref().map_or(0.0, |c| c.buffer_mb);
         let downlink = in_pass && buffer > 10.0;
         sim.apply_action(PlayerAction::SetDownlink { active: downlink })
             .ok();

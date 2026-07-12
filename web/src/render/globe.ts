@@ -6,15 +6,18 @@ import {
 } from "three/addons/renderers/CSS2DRenderer.js";
 import type { Snapshot } from "../types.ts";
 import {
-  earthRadiusRender,
+  bodyRadiusRender,
   eciKmToRender,
   stationLatLonToRender,
 } from "./coords.ts";
 import { designOrbitPoints } from "./orbit-preview.ts";
 import { offsetAlongNormal, shouldShowLabel } from "./visibility.ts";
 
-/** Earth sidereal rotation rate (rad/s) — must match the core's EARTH_ROTATION_RAD_S. */
-const EARTH_ROTATION_RAD_S = 7.292_115_9e-5;
+/**
+ * The globe view renders Earth until BodyView (M9) parameterizes the mesh
+ * from snapshot.bodies. Rotation already comes from the snapshot.
+ */
+const EARTH_RADIUS_KM = 6371;
 
 const MARKER_LIFT = 0.1;
 const LABEL_LIFT = 0.28;
@@ -101,7 +104,11 @@ export class GlobeRenderer {
     sun.position.set(12, 4, 8);
     this.scene.add(ambient, sun);
 
-    const earthGeo = new THREE.SphereGeometry(earthRadiusRender(), 64, 64);
+    const earthGeo = new THREE.SphereGeometry(
+      bodyRadiusRender(EARTH_RADIUS_KM),
+      64,
+      64,
+    );
     const earthMat = new THREE.MeshPhongMaterial({
       color: 0x4488cc,
       emissive: 0x0a1520,
@@ -197,8 +204,23 @@ export class GlobeRenderer {
     this.starfield = this.createStarfield();
     this.scene.add(this.starfield);
 
-    canvas.addEventListener("pointerdown", (e) => this.onPointerDown(e));
-    window.addEventListener("resize", () => this.onResize());
+    canvas.addEventListener("pointerdown", (e) => { this.onPointerDown(e); });
+    canvas.addEventListener("pointermove", (e) => { this.onPointerMove(e); });
+    window.addEventListener("resize", () => { this.onResize(); });
+
+    // One-time camera-controls hint.
+    const hint = document.getElementById("camera-hint");
+    if (hint && localStorage.getItem("satelliteinc_camera_hint") !== "1") {
+      hint.classList.remove("hidden");
+      canvas.addEventListener(
+        "pointerdown",
+        () => {
+          hint.classList.add("hidden");
+          localStorage.setItem("satelliteinc_camera_hint", "1");
+        },
+        { once: true },
+      );
+    }
   }
 
   setShowTleRefs(show: boolean): void {
@@ -229,19 +251,29 @@ export class GlobeRenderer {
     );
   }
 
-  private onPointerDown(event: PointerEvent): void {
+  private stationHit(event: PointerEvent): THREE.Object3D | undefined {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const hits = this.raycaster.intersectObjects(
+    return this.raycaster.intersectObjects(
       this.stationMarkers.children,
       false,
-    );
-    const hit = hits[0]?.object;
+    )[0]?.object;
+  }
+
+  private onPointerDown(event: PointerEvent): void {
+    const hit = this.stationHit(event);
     if (hit?.userData.stationId) {
       this.options.onStationSelect?.(hit.userData.stationId as string);
     }
+  }
+
+  private onPointerMove(event: PointerEvent): void {
+    // Cheap hover affordance: pointer cursor over clickable station dots.
+    this.renderer.domElement.style.cursor = this.stationHit(event)
+      ? "pointer"
+      : "";
   }
 
   private syncStations(snapshot: Snapshot): void {
@@ -252,12 +284,15 @@ export class GlobeRenderer {
         const surface = stationLatLonToRender(
           station.latitude_deg,
           station.longitude_deg,
+          bodyRadiusRender(EARTH_RADIUS_KM),
         );
         dot = new THREE.Mesh(
           this.markerGeometry,
           new THREE.MeshBasicMaterial({ depthTest: true, depthWrite: false }),
         );
-        dot.position.copy(offsetAlongNormal(surface, MARKER_LIFT));
+        dot.position.copy(
+          offsetAlongNormal(surface, bodyRadiusRender(EARTH_RADIUS_KM), MARKER_LIFT),
+        );
         dot.userData.stationId = station.id;
         dot.renderOrder = 2;
         this.stationMarkers.add(dot);
@@ -266,7 +301,9 @@ export class GlobeRenderer {
         const labelDiv = document.createElement("div");
         labelDiv.textContent = station.name;
         label = new CSS2DObject(labelDiv);
-        label.position.copy(offsetAlongNormal(surface, LABEL_LIFT));
+        label.position.copy(
+          offsetAlongNormal(surface, bodyRadiusRender(EARTH_RADIUS_KM), LABEL_LIFT),
+        );
         this.stationLabels.add(label);
         this.stationLabelObjs.set(station.id, label);
       }
@@ -308,7 +345,9 @@ export class GlobeRenderer {
       const refPos = eciKmToRender(ref.position_eci_km);
       const show =
         this.showTleRefs &&
-        shouldShowLabel(refPos, this.camera, { occlude: true });
+        shouldShowLabel(refPos, this.camera, {
+          occludeRadius: bodyRadiusRender(EARTH_RADIUS_KM),
+        });
       entry.dot.position.copy(refPos);
       entry.dot.visible = show;
       entry.label.position
@@ -326,9 +365,13 @@ export class GlobeRenderer {
   }
 
   update(snapshot: Snapshot): void {
-    // Rotation sign matches the ECI→render Y/Z swap so ECEF-anchored stations
-    // line up with the sim's pass geometry.
-    this.earthFixed.rotation.y = -snapshot.sim_seconds * EARTH_ROTATION_RAD_S;
+    // Rotation rate comes from the snapshot (single source of truth: the
+    // core registry). Sign matches the ECI→render Y/Z swap so ECEF-anchored
+    // stations line up with the sim's pass geometry.
+    const focusBodyId = snapshot.spacecraft?.body_id ?? "earth";
+    const focusBody = snapshot.bodies.find((b) => b.id === focusBodyId);
+    this.earthFixed.rotation.y =
+      -snapshot.sim_seconds * (focusBody?.rotation_rad_s ?? 0);
     this.earthFixed.updateMatrixWorld(true);
 
     this.syncStations(snapshot);
@@ -346,6 +389,7 @@ export class GlobeRenderer {
         if (designKey !== this.designOrbitKey) {
           this.designOrbitKey = designKey;
           const pts = designOrbitPoints(
+            bodyRadiusRender(EARTH_RADIUS_KM),
             craft.target_altitude_km,
             craft.target_inclination_deg,
           );
@@ -368,15 +412,9 @@ export class GlobeRenderer {
     this.designOrbitLine.visible = false;
     this.designOrbitKey = "";
 
-    if (craft.phase !== "OnOrbit") {
-      this.satellite.visible = false;
-      this.orbitLine.visible = false;
-      return;
-    }
-
     const pos = eciKmToRender(craft.position_eci_km);
     this.satellite.visible = shouldShowLabel(pos, this.camera, {
-      occlude: true,
+      occludeRadius: bodyRadiusRender(EARTH_RADIUS_KM),
     });
     this.satellite.position.copy(pos);
     (this.satellite.material as THREE.MeshBasicMaterial).color.set(

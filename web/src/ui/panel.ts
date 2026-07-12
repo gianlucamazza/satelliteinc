@@ -1,14 +1,20 @@
 import type { GameContent, Snapshot } from "../types.ts";
 import {
+  bankruptcyRunwayDays,
   commandLabel,
   contractDaysLeft,
   contractProgress,
+  dataFlowStatus,
   formatDuration,
   nextPassStation,
+  orbitRequirementText,
   payloadModeLabel,
 } from "./format.ts";
 
 export type HudTab = "mission" | "ops" | "orbit" | "company";
+
+/** Discrete time-acceleration presets (0 = paused). */
+export const ACCEL_PRESETS = [0, 1, 10, 100, 1000, 10000] as const;
 
 /** Escape content-derived strings interpolated into innerHTML. */
 function esc(value: string): string {
@@ -17,6 +23,29 @@ function esc(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** Stat cell with a fill bar showing value against capacity. */
+function gauge(
+  label: string,
+  value: number,
+  capacity: number,
+  unit: string,
+  opts: { lowIsBad?: boolean; highIsWarn?: boolean } = {},
+): string {
+  const pct =
+    capacity > 0 ? Math.max(0, Math.min(100, (value / capacity) * 100)) : 0;
+  const level =
+    opts.lowIsBad && pct < 20
+      ? " danger"
+      : opts.highIsWarn && pct > 80
+        ? " warn"
+        : "";
+  return `<div class="stat gauge">
+    <label>${label}</label>
+    <strong>${value.toFixed(value < 10 ? 1 : 0)} ${unit} <span class="stat-sub">(${pct.toFixed(0)}%)</span></strong>
+    <div class="progress-bar thin"><div class="progress-fill${level}" style="width:${pct}%"></div></div>
+  </div>`;
 }
 
 export interface PanelCallbacks {
@@ -36,8 +65,13 @@ export interface PanelCallbacks {
   onQueueCommand: (command: string, stationId: string) => void;
   onPurchaseTech: (techId: string) => void;
   onSetGameMode: (mode: string) => void;
+  onDecommission: (salvageUsd: number) => void;
+  onRestartCampaign: () => void;
+  onShowHelp: () => void;
   onAutoDownlinkChange: (active: boolean) => void;
   onShowTleRefsChange: (active: boolean) => void;
+  onShowLegendChange: (active: boolean) => void;
+  getShowLegend: () => boolean;
   onLoadScenario: (scenarioId: string) => void;
   onExportSave: () => void;
   onImportSave: () => void;
@@ -58,6 +92,9 @@ export class HudPanel {
   private activeTab: HudTab = "mission";
   private lastContractToast = "";
   private toastTimer: number | undefined;
+  private victoryDismissed = false;
+  private lastEndScreenKey = "";
+  private readonly tabAttention = new Set<HudTab>();
 
   constructor(
     private readonly content: GameContent,
@@ -71,14 +108,25 @@ export class HudPanel {
     this.toastEl = document.getElementById("toast")!;
     this.bindActionDelegation();
     this.bindTabs();
+    this.bindEndScreen();
     this.renderTabs();
   }
 
   setTab(tab: HudTab): void {
     this.activeTab = tab;
+    this.tabAttention.delete(tab);
     this.renderTabs();
     if (this.currentSnapshot) {
       this.renderActions(this.currentSnapshot);
+    }
+  }
+
+  /** Mark a tab with an attention dot instead of yanking the player to it. */
+  markTabAttention(tab: HudTab): void {
+    if (tab === this.activeTab) return;
+    if (!this.tabAttention.has(tab)) {
+      this.tabAttention.add(tab);
+      this.renderTabs();
     }
   }
 
@@ -89,6 +137,7 @@ export class HudPanel {
     this.renderActions(snapshot);
     this.updateActionDynamicState(snapshot);
     this.maybeToastContract(snapshot);
+    this.renderEndScreen(snapshot);
   }
 
   logEvent(message: string, className = ""): void {
@@ -133,6 +182,67 @@ export class HudPanel {
     }
   }
 
+  private bindEndScreen(): void {
+    document
+      .getElementById("endscreen-restart")
+      ?.addEventListener("click", () => {
+        this.victoryDismissed = false;
+        this.callbacks.onRestartCampaign();
+      });
+    document
+      .getElementById("endscreen-sandbox")
+      ?.addEventListener("click", () => {
+        this.victoryDismissed = false;
+        this.callbacks.onSetGameMode("sandbox");
+      });
+    document
+      .getElementById("endscreen-continue")
+      ?.addEventListener("click", () => {
+        this.victoryDismissed = true;
+        document.getElementById("endscreen")?.classList.add("hidden");
+      });
+  }
+
+  private renderEndScreen(s: Snapshot): void {
+    const el = document.getElementById("endscreen");
+    if (!el) return;
+    const isEnd = s.phase === "victory" || s.phase === "game_over";
+    const key = `${s.phase}|${s.outcome ?? ""}|${this.victoryDismissed}`;
+    if (key === this.lastEndScreenKey) return;
+    this.lastEndScreenKey = key;
+
+    if (!isEnd) {
+      this.victoryDismissed = false;
+      el.classList.add("hidden");
+      return;
+    }
+    if (s.phase === "victory" && this.victoryDismissed) {
+      el.classList.add("hidden");
+      return;
+    }
+
+    const title = document.getElementById("endscreen-title")!;
+    const body = document.getElementById("endscreen-body")!;
+    const continueBtn = document.getElementById("endscreen-continue")!;
+    if (s.phase === "victory") {
+      title.textContent = "Victory!";
+      body.textContent =
+        "All contracts completed — Satellite Inc is the market leader. Keep flying or start over.";
+    } else if (s.outcome === "bankrupt") {
+      title.textContent = "Bankrupt";
+      body.textContent =
+        "Cash fell below −$50k. Operating costs never sleep — next time keep a contract in the pipeline.";
+    } else {
+      title.textContent = "Reputation lost";
+      body.textContent =
+        "Reputation hit zero after too many failed contracts. No one will sign with Satellite Inc anymore.";
+    }
+    continueBtn.style.display = s.phase === "victory" ? "" : "none";
+    el.classList.toggle("victory", s.phase === "victory");
+    el.classList.toggle("game-over", s.phase === "game_over");
+    el.classList.remove("hidden");
+  }
+
   private bindTabs(): void {
     this.tabBar.addEventListener("click", (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(
@@ -153,7 +263,7 @@ export class HudPanel {
     this.tabBar.innerHTML = tabs
       .map(
         (t) =>
-          `<button type="button" class="tab${this.activeTab === t.id ? " active" : ""}" data-tab="${t.id}">${t.label}</button>`,
+          `<button type="button" class="tab${this.activeTab === t.id ? " active" : ""}${this.tabAttention.has(t.id) ? " attention" : ""}" data-tab="${t.id}">${t.label}</button>`,
       )
       .join("");
   }
@@ -175,6 +285,14 @@ export class HudPanel {
       c?.anomaly_label ?? "",
       c?.command_queue.length ?? "",
       contract?.downlink_mb_done.toFixed(0) ?? "",
+      s.active_contract_orbit_ok ?? "",
+      s.outcome ?? "",
+      s.ops_cost_usd_per_day.toFixed(0),
+      c ? Math.round((c.power_wh / c.battery_wh_capacity) * 50) : "",
+      c ? Math.round((c.buffer_mb / c.buffer_capacity_mb) * 50) : "",
+      c?.propellant_kg.toFixed(2) ?? "",
+      dataFlowStatus(s)?.text ?? "",
+      Math.round(bankruptcyRunwayDays(s) ?? -1),
       s.ground_stations
         .map(
           (st) =>
@@ -204,33 +322,49 @@ export class HudPanel {
       })
       .join("");
 
+    const orbitReq = contract ? orbitRequirementText(contract) : "";
+    const orbitSpecLine =
+      contract && orbitReq
+        ? s.active_contract_orbit_ok === false
+          ? `<div class="orbit-spec bad">Orbit OUT OF SPEC — needs ${orbitReq}</div>`
+          : `<div class="orbit-spec ok">Orbit OK (${orbitReq})</div>`
+        : "";
+
     const contractBlock = contract
       ? `<div class="contract-card">
           <div class="contract-head">
             <span>${esc(contract.name)}</span>
             <span class="deadline${contractDaysLeft(contract, s.sim_seconds) < 2 ? " urgent" : ""}">${contractDaysLeft(contract, s.sim_seconds).toFixed(1)} d left</span>
           </div>
+          ${orbitSpecLine}
           <div class="progress-bar"><div class="progress-fill" style="width:${contractProgress(contract)}%"></div></div>
           <div class="progress-label">${contract.downlink_mb_done.toFixed(0)} / ${contract.downlink_mb_required.toFixed(0)} MB · +$${contract.payout_usd.toLocaleString()} · +${contract.reputation_reward} rep</div>
           ${contract.min_distinct_stations > 0 ? `<div class="progress-label">Stations: ${contract.stations_used.length} / ${contract.min_distinct_stations} (${esc(contract.stations_used.join(", ")) || "none yet"})</div>` : ""}
         </div>`
       : `<p class="hint">No active contract — pick one in Mission tab.</p>`;
 
+    const flow = dataFlowStatus(s);
+    const flowLine =
+      flow && craft?.phase === "OnOrbit"
+        ? `<div class="orbit-spec ${flow.kind === "bad" ? "bad" : flow.kind === "ok" ? "ok" : "warn"}">${flow.text}</div>`
+        : "";
+
     const craftBlock = craft
       ? `<div class="stat-grid">
           <div class="stat"><label>Bus</label><strong>${esc(craft.bus_name)}</strong></div>
-          <div class="stat"><label>Buffer</label><strong>${craft.buffer_mb.toFixed(1)} MB</strong></div>
           <div class="stat"><label>Altitude</label><strong>${craft.altitude_km.toFixed(0)} km</strong></div>
+          ${gauge("Battery", craft.power_wh, craft.battery_wh_capacity, "Wh", { lowIsBad: true })}
+          ${gauge("Buffer", craft.buffer_mb, craft.buffer_capacity_mb, "MB", { highIsWarn: true })}
+          ${gauge("Propellant", craft.propellant_kg, craft.propellant_capacity_kg, "kg", { lowIsBad: true })}
           <div class="stat"><label>Δv left</label><strong>${(craft.delta_v_remaining_km_s * 1000).toFixed(0)} m/s</strong></div>
           <div class="stat"><label>Sunlight</label><strong class="${craft.in_sunlight ? "pass-active" : ""}">${craft.in_sunlight ? "YES" : "Eclipse"}</strong></div>
-          <div class="stat"><label>Power</label><strong>${craft.power_wh.toFixed(0)} Wh</strong></div>
           <div class="stat"><label>Downlink</label><strong>${craft.downlink_active ? `${(craft.downlink_rate_mb_s * 1000).toFixed(0)} KB/s` : "Off"}</strong></div>
           <div class="stat"><label>Imaging</label><strong>${craft.imaging_rate_mb_s.toFixed(1)} MB/s</strong></div>
           <div class="stat"><label>Payload</label><strong>${payloadModeLabel(craft.payload_mode)}</strong></div>
           <div class="stat"><label>Apsis</label><strong class="${craft.at_apsis ? "pass-active" : ""}">${craft.at_apsis ? "READY" : "—"}</strong></div>
-          <div class="stat"><label>Propellant</label><strong>${craft.propellant_kg.toFixed(1)} kg</strong></div>
         </div>
-        ${craft.anomaly_label ? `<div class="alert warn" title="Use Clear anomaly or Safe mode during next pass">⚠ ${esc(craft.anomaly_label)}</div>` : ""}
+        ${flowLine}
+        ${craft.anomaly_label ? `<div class="alert warn">⚠ ${esc(craft.anomaly_label)} — queue Clear anomaly or Safe mode at a station</div>` : ""}
         ${craft.command_queue.length ? `<ul class="queue-list">${craft.command_queue.map((q) => `<li>${esc(commandLabel(q.command))} → ${esc(q.station_id)}</li>`).join("")}</ul>` : ""}`
       : "";
 
@@ -240,13 +374,21 @@ export class HudPanel {
         ? `<p class="hint">No station above horizon — increase time accel or wait.</p>`
         : "";
 
+    const runway = bankruptcyRunwayDays(s);
+    const runwayBanner =
+      runway != null && (runway < 30 || s.cash_usd < 0)
+        ? `<div class="alert danger">💸 Bankrupt in ~${Math.max(0, runway).toFixed(0)} d at current burn — complete a contract or decommission</div>`
+        : "";
+
     this.statusEl.innerHTML = `
       <div class="stat-grid">
-        <div class="stat"><label>Cash</label><strong>$${s.cash_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></div>
-        <div class="stat"><label>Reputation</label><strong>${s.reputation.toFixed(0)} / 100</strong></div>
+        <div class="stat"><label>Cash</label><strong class="${s.cash_usd < 0 ? "negative" : ""}">$${s.cash_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></div>
+        ${gauge("Reputation", s.reputation, 100, "", {})}
         <div class="stat"><label>Sim Time</label><strong>Day ${s.sim_days.toFixed(2)}</strong></div>
-        <div class="stat"><label>Time Accel</label><strong>${s.time_accel.toFixed(0)}×</strong></div>
+        <div class="stat"><label>Time Accel</label><strong>${s.time_accel === 0 ? "PAUSED" : `${s.time_accel.toFixed(0)}×`}</strong></div>
+        ${s.ops_cost_usd_per_day > 0 ? `<div class="stat"><label>Ops cost</label><strong>$${s.ops_cost_usd_per_day.toLocaleString(undefined, { maximumFractionDigits: 0 })}/day</strong></div>` : ""}
       </div>
+      ${runwayBanner}
       ${contractBlock}
       ${craftBlock}
       ${nextPassBlock}
@@ -265,8 +407,13 @@ export class HudPanel {
     parts.push(`
       <div class="toolbar">
         <div class="field">
-          <label>Time acceleration</label>
-          <input type="range" id="time-accel" min="1" max="10000" step="1" value="${s.time_accel}" />
+          <label>Time</label>
+          <div class="accel-row">
+            ${ACCEL_PRESETS.map(
+              (p) =>
+                `<button type="button" class="accel-btn" data-accel="${p}" title="${p === 0 ? "Pause (Space)" : `${p}× speed`}">${p === 0 ? "⏸" : `${p}×`}</button>`,
+            ).join("")}
+          </div>
         </div>
         <label class="toggle">
           <input type="checkbox" id="auto-downlink" ${this.callbacks.getAutoDownlink() ? "checked" : ""} />
@@ -349,12 +496,14 @@ export class HudPanel {
             100,
             (s.reputation / Math.max(offer.reputation_required, 1)) * 100,
           );
+          const orbitReq = orbitRequirementText(offer);
           parts.push(`
             <div class="offer-card ${offer.available ? "" : "locked"}">
               <button class="btn-contract" data-contract="${esc(offer.template_id)}" ${offer.available ? "" : "disabled"}>
                 ${esc(offer.name)}
               </button>
-              <p class="offer-meta">$${offer.payout_usd.toLocaleString()} · ${offer.downlink_mb} MB · ${offer.deadline_days} d · rep ${offer.reputation_required}${offer.min_distinct_stations > 0 ? ` · ${offer.min_distinct_stations} stations` : ""}</p>
+              ${offer.repeat ? `<span class="chip repeat">REPEAT — ×0.6 payout, no rep</span>` : ""}
+              <p class="offer-meta">$${offer.payout_usd.toLocaleString()} · ${offer.downlink_mb} MB · ${offer.deadline_days} d · rep ${offer.reputation_required}${offer.min_distinct_stations > 0 ? ` · ${offer.min_distinct_stations} stations` : ""}${orbitReq ? ` · ${orbitReq}` : ""}</p>
               <p class="offer-desc">${esc(offer.description)}</p>
               ${!offer.available ? `<div class="progress-bar thin"><div class="progress-fill" style="width:${repPct}%"></div></div>` : ""}
             </div>
@@ -371,23 +520,38 @@ export class HudPanel {
           <p class="hint">Checklist: bus configured · contract accepted · funds available</p>
         `);
       }
-    } else if (craft.phase === "OnOrbit" && !s.active_contract) {
+    } else if (!s.active_contract) {
       parts.push(
         `<div class="success-banner">Contract complete! Choose your next mission.</div>`,
       );
       for (const offer of s.marketplace) {
+        const orbitReq = orbitRequirementText(offer);
         parts.push(`
           <button class="btn-contract" data-contract="${esc(offer.template_id)}" ${offer.available ? "" : "disabled"}>
-            ${esc(offer.name)} — $${offer.payout_usd.toLocaleString()}
+            ${esc(offer.name)} — $${offer.payout_usd.toLocaleString()}${offer.repeat ? " (repeat)" : ""}
           </button>
+          ${orbitReq ? `<p class="hint">${orbitReq}</p>` : ""}
         `);
       }
+      parts.push(this.decommissionButton(craft.bus_id));
     } else {
       parts.push(
         `<p class="hint">Satellite on orbit. Use Ops and Orbit tabs during the mission.</p>`,
       );
+      parts.push(this.decommissionButton(craft.bus_id));
     }
     return parts;
+  }
+
+  private decommissionButton(busId: string): string {
+    const salvage = this.salvageUsd(busId);
+    return `<button id="btn-decommission" class="danger" title="Retire the satellite and return to the design phase">Decommission — salvage $${salvage.toLocaleString()}</button>`;
+  }
+
+  private salvageUsd(busId: string): number {
+    const cost =
+      this.content.buses.find((b) => b.id === busId)?.launch_cost_usd ?? 0;
+    return Math.round(cost * 0.15);
   }
 
   private renderOpsTab(s: Snapshot): string[] {
@@ -438,7 +602,7 @@ export class HudPanel {
       const p = craft.pending_hohmann.plan;
       const apsisNeeded = p.raising ? "apogee" : "perigee";
       parts.push(`
-        <div class="alert warn">Hohmann → ${p.target_altitude_km} km. Burn 2 at <strong>${apsisNeeded}</strong> when Apsis shows READY.</div>
+        <div class="alert warn">Hohmann → ${p.target_altitude_km} km. Burn 2 at <strong>${apsisNeeded}</strong> when Apsis shows READY. <span id="apsis-eta" class="stat-sub"></span></div>
         <button id="btn-hohmann-2" class="primary" ${!craft.at_apsis ? "disabled" : ""}>Circularize (Burn 2)</button>
       `);
     } else if (craft.hohmann_preview) {
@@ -449,7 +613,7 @@ export class HudPanel {
           <input type="range" id="maneuver-alt" min="250" max="1200" value="${craft.maneuver_target_altitude_km}" />
           <span id="maneuver-alt-val">${craft.maneuver_target_altitude_km} km</span>
         </div>
-        <p class="hint">Δv ${(preview.total_dv_km_s * 1000).toFixed(0)} m/s total · burn 1 at ${apsisNeeded} when Apsis READY</p>
+        <p class="hint">Δv ${(preview.total_dv_km_s * 1000).toFixed(0)} m/s total · burn 1 at ${apsisNeeded} when Apsis READY <span id="apsis-eta" class="stat-sub"></span></p>
         <button id="btn-hohmann-1" class="primary" ${!craft.at_apsis ? "disabled" : ""}>Start Hohmann (Burn 1)</button>
       `);
     }
@@ -466,12 +630,18 @@ export class HudPanel {
         </select>
         <p class="hint">${s.game_mode === "sandbox" ? "Sandbox: all buses, all contracts available, −5 rep on failure." : "Campaign: rep gates, buses unlock via R&D, −10 rep on failure."}</p>
       </div>
-      <button id="btn-export-save">Export save</button>
-      <button id="btn-import-save">Import save</button>
+      <button id="btn-export-save">Save game</button>
+      <button id="btn-import-save">Load game</button>
+      <button id="btn-help">Help / Tutorial</button>
       <label class="toggle">
         <input type="checkbox" id="show-tle" ${this.callbacks.getShowTleRefs() ? "checked" : ""} />
         Show TLE reference satellites (ISS)
       </label>
+      <label class="toggle">
+        <input type="checkbox" id="show-legend" ${this.callbacks.getShowLegend() ? "checked" : ""} />
+        Show globe legend
+      </label>
+      <p class="hint">Shortcuts: Space pause · +/− speed · 1-4 tabs · D downlink · ? help</p>
     `);
 
     if (s.unlocked_tech.length) {
@@ -519,18 +689,23 @@ export class HudPanel {
         : craft?.hohmann_preview
           ? "hohmann1"
           : "nohohmann",
-      s.marketplace.map((m) => `${m.template_id}:${m.available}`).join(","),
+      s.outcome ?? "",
+      s.marketplace
+        .map((m) => `${m.template_id}:${m.available}:${m.repeat}`)
+        .join(","),
     ].join("|");
   }
 
   private updateActionDynamicState(s: Snapshot): void {
     const craft = s.spacecraft;
 
-    const timeAccel = document.getElementById(
-      "time-accel",
-    ) as HTMLInputElement | null;
-    if (timeAccel && document.activeElement !== timeAccel) {
-      timeAccel.value = String(s.time_accel);
+    for (const btn of document.querySelectorAll<HTMLButtonElement>(
+      ".accel-btn",
+    )) {
+      btn.classList.toggle(
+        "active",
+        Number(btn.dataset.accel) === s.time_accel,
+      );
     }
 
     const busSel = document.getElementById(
@@ -583,6 +758,25 @@ export class HudPanel {
       "btn-hohmann-2",
     ) as HTMLButtonElement | null;
     if (hohmann2) hohmann2.disabled = !craft?.at_apsis;
+
+    // Live countdown to the burn apsis (rendered HTML is structure-keyed,
+    // so this span is refreshed here every frame instead).
+    const apsisEta = document.getElementById("apsis-eta");
+    if (apsisEta && craft) {
+      const raising = craft.pending_hohmann
+        ? craft.pending_hohmann.plan.raising
+        : (craft.hohmann_preview?.raising ?? true);
+      // Burn 1 fires at perigee when raising; burn 2 at apogee (and vice versa).
+      const burn2 = craft.pending_hohmann != null;
+      const wantPerigee = raising !== burn2;
+      const eta = wantPerigee
+        ? craft.seconds_to_perigee
+        : craft.seconds_to_apogee;
+      apsisEta.textContent =
+        craft.at_apsis || eta == null
+          ? ""
+          : `· apsis in ~${formatDuration(eta)}`;
+    }
   }
 
   private bindActionDelegation(): void {
@@ -600,8 +794,17 @@ export class HudPanel {
         this.callbacks.onAcceptContract(target.dataset.contract!);
         return;
       }
+      if (target.classList.contains("accel-btn")) {
+        this.callbacks.onTimeAccel(Number(target.dataset.accel));
+        return;
+      }
       if (target.id === "btn-launch") {
         this.callbacks.onLaunch();
+        return;
+      }
+      if (target.id === "btn-decommission") {
+        const busId = s.spacecraft?.bus_id;
+        if (busId) this.callbacks.onDecommission(this.salvageUsd(busId));
         return;
       }
       if (target.id === "btn-downlink") {
@@ -653,6 +856,10 @@ export class HudPanel {
         this.callbacks.onLoadScenario(sel.value);
         return;
       }
+      if (target.id === "btn-help") {
+        this.callbacks.onShowHelp();
+        return;
+      }
       if (target.id === "btn-export-save") {
         this.callbacks.onExportSave();
         return;
@@ -664,10 +871,6 @@ export class HudPanel {
 
     this.actionEl.addEventListener("input", (e) => {
       const target = e.target as HTMLElement;
-      if (target.id === "time-accel") {
-        this.callbacks.onTimeAccel(Number((target as HTMLInputElement).value));
-        return;
-      }
       if (target.id === "altitude" || target.id === "inclination") {
         const alt = document.getElementById(
           "altitude",
@@ -721,6 +924,10 @@ export class HudPanel {
         this.callbacks.onShowTleRefsChange(
           (target as HTMLInputElement).checked,
         );
+        return;
+      }
+      if (target.id === "show-legend") {
+        this.callbacks.onShowLegendChange((target as HTMLInputElement).checked);
         return;
       }
       if (target.id === "scenario-select") {

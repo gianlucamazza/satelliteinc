@@ -21,8 +21,8 @@ pub struct ReferenceSatellite {
 
 #[cfg(feature = "sgp4")]
 mod imp {
-    use super::*;
-    use sgp4::{parse_3les, Constants, MinutesSinceEpoch};
+    use super::{ReferenceSatellite, SimError, TleEntry};
+    use sgp4::{Constants, MinutesSinceEpoch, parse_3les};
 
     use crate::constants::EARTH_RADIUS_KM;
 

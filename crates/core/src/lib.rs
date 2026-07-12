@@ -1,4 +1,5 @@
 pub mod action;
+pub mod body;
 pub mod clock;
 pub mod company;
 pub mod constants;
@@ -15,6 +16,8 @@ pub mod snapshot;
 pub mod spacecraft;
 
 pub use action::PlayerAction;
+pub use body::{BodyRegistry, CelestialBody};
+pub use company::GameOutcome;
 pub use content::GameContent;
 pub use error::SimError;
 pub use event::SimEvent;
