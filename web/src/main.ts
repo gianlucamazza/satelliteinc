@@ -263,6 +263,35 @@ async function main(): Promise<void> {
         }
       });
     },
+    onSetTransferTarget: (bodyId, captureAltitudeKm, captureInclinationDeg) => {
+      runAction(
+        {
+          type: "set_transfer_target",
+          body_id: bodyId,
+          capture_altitude_km: captureAltitudeKm,
+          capture_inclination_deg: captureInclinationDeg,
+        },
+        "Transfer target failed",
+      );
+    },
+    onBeginTransfer: () => {
+      if (runAction({ type: "begin_transfer" }, "Transfer failed")) {
+        panel.showToast("Injection burn complete — cruise started", "success");
+        views.setActive("map");
+      }
+    },
+    onWarpTo: (targetSimSeconds) => {
+      const before = snapshot?.sim_days ?? 0;
+      // WarpTo strides ~23 sim-days per call: re-issue until reached.
+      for (let i = 0; i < 40; i++) {
+        if (!runAction({ type: "warp_to", target_sim_seconds: targetSimSeconds }, "Warp failed")) {
+          return;
+        }
+        if ((snapshot?.sim_seconds ?? 0) >= targetSimSeconds - 1) break;
+      }
+      const days = (snapshot?.sim_days ?? 0) - before;
+      panel.showToast(`Warped +${days.toFixed(1)} days`, "info");
+    },
     onRestartCampaign: () => {
       const scenarioId = content.scenarios?.[0]?.id ?? "campaign_start";
       if (
@@ -361,6 +390,7 @@ async function main(): Promise<void> {
 
   // Keyboard shortcuts (skip while typing in a form control or a modal is up).
   const TAB_KEYS: Record<string, HudTab> = {
+    "5": "transfer",
     "1": "mission",
     "2": "ops",
     "3": "orbit",
@@ -462,6 +492,14 @@ async function main(): Promise<void> {
         return `GAME OVER — ${ev.reason === "bankrupt" ? "bankruptcy" : "reputation lost"}`;
       case "cash_negative":
         return "WARNING: cash is negative — bankruptcy at −$50k";
+      case "transfer_started":
+        return `Transfer injection — $${ev.injection_cost_usd.toLocaleString()}, arrival day ${(ev.arrival_sim_seconds / 86_400).toFixed(1)}`;
+      case "transfer_arrived":
+        return `Arrived at ${ev.body_id}`;
+      case "capture_executed":
+        return `Capture burn executed — ${ev.delta_v_km_s.toFixed(2)} km/s`;
+      case "warp_completed":
+        return `Warped +${(ev.seconds / 86_400).toFixed(1)} days`;
       default:
         return JSON.stringify(ev);
     }
@@ -511,6 +549,11 @@ async function main(): Promise<void> {
         if (ev.type === "anomaly_started") {
           panel.showToast(msg, "error");
           panel.markTabAttention("ops");
+        }
+        if (ev.type === "transfer_arrived") {
+          panel.showToast(msg, "success");
+          views.setActive("body");
+          panel.markTabAttention("mission");
         }
         if (ev.type === "game_won") {
           panel.showToast(msg, "success");

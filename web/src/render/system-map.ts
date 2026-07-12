@@ -53,6 +53,9 @@ export class SystemMapView {
   private readonly infoCard: HTMLElement | null;
   private readonly dateChip: HTMLElement | null;
   private readonly focusRing: THREE.Mesh;
+  private cruiseLine!: THREE.Line;
+  private craftMarker!: THREE.Mesh;
+  private cruiseKey = "";
   private selectedId: string | null = null;
   private lastSnapshot: Snapshot | null = null;
   private viewSize = 26;
@@ -82,6 +85,21 @@ export class SystemMapView {
     this.focusRing.rotation.x = -Math.PI / 2;
     this.focusRing.visible = false;
     this.scene.add(this.focusRing);
+
+    const cruiseMat = new THREE.LineBasicMaterial({
+      color: 0xffaa44,
+      transparent: true,
+      opacity: 0.9,
+    });
+    this.cruiseLine = new THREE.Line(new THREE.BufferGeometry(), cruiseMat);
+    this.cruiseLine.visible = false;
+    this.scene.add(this.cruiseLine);
+    this.craftMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffdd44 }),
+    );
+    this.craftMarker.visible = false;
+    this.scene.add(this.craftMarker);
 
     this.tooltip = document.getElementById("map-tooltip");
     this.infoCard = document.getElementById("map-infocard");
@@ -298,6 +316,43 @@ export class SystemMapView {
       }
     }
     this.focusRing.visible = craftBodyId != null;
+
+    // Cruise: craft marker + transfer arc in heliocentric map space. The
+    // craft's frame coordinates are offset by the frame body's position
+    // (zero when the frame IS the sun).
+    const craft = snapshot.spacecraft;
+    const transfer = craft?.transfer ?? null;
+    if (craft && transfer && craft.phase === "Transfer") {
+      const frame = snapshot.bodies.find(
+        (b) => b.id === transfer.frame_body_id,
+      );
+      const frameHelio: [number, number, number] =
+        frame && frame.id !== "sun" ? frame.position_helio_km : [0, 0, 0];
+      const toHelio = (
+        p: [number, number, number],
+      ): [number, number, number] => [
+        p[0] + frameHelio[0],
+        p[1] + frameHelio[1],
+        p[2] + frameHelio[2],
+      ];
+      this.craftMarker.position.copy(toMap(toHelio(craft.position_eci_km)));
+      this.craftMarker.visible = true;
+      const key = `${transfer.target_body_id}|${transfer.departure_sim_seconds}`;
+      if (key !== this.cruiseKey && craft.orbit_trail_km.length > 1) {
+        this.cruiseKey = key;
+        const pts = craft.orbit_trail_km.map((p) => toMap(toHelio(p)));
+        this.cruiseLine.geometry.dispose();
+        this.cruiseLine.geometry = new THREE.BufferGeometry().setFromPoints(
+          pts,
+        );
+      }
+      this.cruiseLine.visible = true;
+      this.focusRing.visible = false;
+    } else {
+      this.craftMarker.visible = false;
+      this.cruiseLine.visible = false;
+      this.cruiseKey = "";
+    }
 
     if (this.dateChip && this.activeFlag) {
       const t = Date.parse(snapshot.epoch_utc) + snapshot.sim_seconds * 1000;

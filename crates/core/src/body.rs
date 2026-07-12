@@ -34,6 +34,8 @@ pub struct CelestialBody {
     /// Divides the anomaly MTBF at this body.
     pub anomaly_rate_multiplier: f64,
     pub anomaly_flavor: Option<AnomalyFlavorDef>,
+    pub injection_cost_multiplier: f64,
+    pub has_atmosphere: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +105,8 @@ impl BodyRegistry {
                 dsn_bandwidth_factor: def.dsn_bandwidth_factor,
                 anomaly_rate_multiplier: def.anomaly_rate_multiplier,
                 anomaly_flavor: def.anomaly_flavor.clone(),
+                injection_cost_multiplier: def.injection_cost_multiplier,
+                has_atmosphere: def.has_atmosphere,
             });
         }
 

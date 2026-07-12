@@ -66,6 +66,20 @@ pub enum SimEvent {
     Decommissioned {
         salvage_usd: f64,
     },
+    TransferStarted {
+        target_body_id: String,
+        arrival_sim_seconds: f64,
+        injection_cost_usd: f64,
+    },
+    TransferArrived {
+        body_id: String,
+    },
+    CaptureExecuted {
+        delta_v_km_s: f64,
+    },
+    WarpCompleted {
+        seconds: f64,
+    },
     GameWon,
     GameOver {
         reason: GameOutcome,

@@ -3,6 +3,7 @@ mod maneuver;
 mod propagate;
 mod sgp4_cat;
 mod state_vectors;
+mod transfer;
 
 pub use sgp4_cat::{ReferenceSatellite, TleEntry, TlePropagator};
 
@@ -13,9 +14,13 @@ pub use maneuver::{
 };
 pub use propagate::{
     eci_position_km, eci_velocity_km_s, mean_to_true_anomaly_deg, orbit_period_seconds,
-    orbit_trail_samples, seconds_to_apsides,
+    orbit_trail_samples, seconds_to_apsides, true_to_mean_anomaly_deg,
 };
 pub use state_vectors::{at_apogee, at_apsis, at_perigee, elements_from_pv};
+pub use transfer::{
+    TransferPlan, WINDOW_TOLERANCE_DEG, next_launch_window, phase_angle_deg, plan_transfer,
+    required_phase_angle_deg, window_open,
+};
 
 /// Build a circular orbit from altitude above a body of the given radius.
 #[must_use]

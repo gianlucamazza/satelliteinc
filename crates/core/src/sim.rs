@@ -18,7 +18,10 @@ use crate::orbit::{
     ReferenceSatellite, TlePropagator, at_apsis, circular_orbit, eci_position_km,
     eci_velocity_km_s, orbit_trail_samples, seconds_to_apsides,
 };
-use crate::snapshot::{BodySnapshot, GamePhase, Snapshot, SpacecraftSnapshot, StationSnapshot};
+use crate::snapshot::{
+    BodySnapshot, GamePhase, Snapshot, SpacecraftSnapshot, StationSnapshot,
+    TransferPlannerSnapshot, TransferSnapshot,
+};
 use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, Spacecraft};
 
 const STEP_DT_SECONDS: f64 = 1.0;
@@ -29,6 +32,10 @@ pub const BANKRUPTCY_FLOOR_USD: f64 = -50_000.0;
 pub const BASE_OVERHEAD_USD_PER_DAY: f64 = 1_000.0;
 /// Fraction of launch cost refunded on decommission.
 pub const SALVAGE_FRACTION: f64 = 0.15;
+/// Ops-cost fraction while hibernated on a transfer cruise.
+pub const HIBERNATION_OPS_FRACTION: f64 = 0.10;
+/// Longest stride a single WarpTo call advances (re-issue to continue).
+pub const WARP_CHUNK_SECONDS: f64 = 2_000_000.0;
 
 pub struct SimState {
     pub clock: SimClock,
@@ -101,11 +108,15 @@ impl SimState {
 
     /// Link bandwidth for a station serving a craft at `body`: full for a
     /// local dish, scaled by the body's DSN factor over a deep-space link.
-    fn station_bandwidth_for(station: &GroundStation, body: &CelestialBody) -> f64 {
+    fn station_bandwidth_for(
+        station: &GroundStation,
+        body: &CelestialBody,
+        deep_space_comms_multiplier: f64,
+    ) -> f64 {
         if station.body_id == body.id {
             station.bandwidth_mbps
         } else {
-            station.bandwidth_mbps * body.dsn_bandwidth_factor
+            station.bandwidth_mbps * body.dsn_bandwidth_factor * deep_space_comms_multiplier
         }
     }
 
@@ -150,6 +161,145 @@ impl SimState {
             was_visible = visible;
         }
         None
+    }
+
+    /// Validate and start an interplanetary transfer: cash pays the
+    /// injection, propellant for the capture burn is reserved up front.
+    fn begin_transfer(&mut self) -> Result<(), SimError> {
+        let now = self.clock.sim_seconds;
+        let craft = self
+            .spacecraft
+            .as_ref()
+            .ok_or_else(|| SimError::InvalidAction("no spacecraft".into()))?;
+        if craft.phase != CraftPhase::OnOrbit {
+            return Err(SimError::WrongPhase);
+        }
+        let elements = craft
+            .elements
+            .ok_or_else(|| SimError::InvalidAction("no orbit".into()))?;
+        let target_sel = craft
+            .transfer_target
+            .clone()
+            .ok_or_else(|| SimError::InvalidAction("no transfer target set".into()))?;
+        let origin_idx = self.bodies.idx(&craft.body_id).expect("validated body id");
+        let target_idx = self
+            .bodies
+            .idx(&target_sel.body_id)
+            .ok_or_else(|| SimError::Content(format!("unknown body: {}", target_sel.body_id)))?;
+
+        if !crate::orbit::window_open(&self.bodies, origin_idx, target_idx, now)? {
+            let next = crate::orbit::next_launch_window(&self.bodies, origin_idx, target_idx, now)?;
+            return Err(SimError::InvalidAction(format!(
+                "transfer window closed — next opens in {:.1} days",
+                (next - now) / crate::constants::SECONDS_PER_DAY
+            )));
+        }
+
+        let plan = crate::orbit::plan_transfer(
+            &self.bodies,
+            origin_idx,
+            target_idx,
+            elements.semi_major_axis_km,
+            target_sel.capture_altitude_km,
+            now,
+        )?;
+
+        let target_body = self.bodies.body(target_idx);
+        let injection_cost = craft.bus.launch_cost_usd * target_body.injection_cost_multiplier;
+        if !self.company.can_afford(injection_cost) {
+            self.push_event(SimEvent::InsufficientFunds {
+                required_usd: injection_cost,
+            });
+            return Err(SimError::InsufficientFunds(injection_cost));
+        }
+
+        // Aerobraking tech shaves the capture burn where there's air.
+        let capture_dv = if target_body.has_atmosphere {
+            plan.capture_dv_km_s * self.company.capture_dv_multiplier
+        } else {
+            plan.capture_dv_km_s
+        };
+        let isp = craft.bus.isp_s * self.company.isp_multiplier;
+        let reserved_kg = crate::orbit::propellant_for_delta_v(
+            capture_dv,
+            craft.dry_mass_kg(),
+            craft.propellant_kg,
+            isp,
+        );
+        if reserved_kg > craft.propellant_kg + 1e-6 {
+            return Err(SimError::InvalidAction(format!(
+                "insufficient propellant for the capture burn: need {reserved_kg:.1} kg"
+            )));
+        }
+
+        let arrival = now + plan.transfer_seconds;
+        let frame_body_id = plan.frame_body_id.clone();
+        let transfer = crate::spacecraft::ActiveTransfer {
+            origin_body_id: plan.origin_body_id.clone(),
+            target_body_id: plan.target_body_id.clone(),
+            frame_body_id: frame_body_id.clone(),
+            departure_sim_seconds: now,
+            arrival_sim_seconds: arrival,
+            capture_altitude_km: target_sel.capture_altitude_km,
+            capture_inclination_deg: target_sel.capture_inclination_deg,
+            capture_dv_km_s: capture_dv,
+            capture_propellant_reserved_kg: reserved_kg,
+        };
+
+        self.company.cash_usd -= injection_cost;
+        let craft = self.spacecraft.as_mut().expect("checked above");
+        craft.propellant_kg -= reserved_kg;
+        craft.phase = CraftPhase::Transfer;
+        craft.body_id = frame_body_id;
+        craft.elements = Some(plan.elements);
+        craft.pending_hohmann = None;
+        craft.downlink_active = false;
+        craft.transfer = Some(transfer);
+        self.pass_active.fill(false);
+        self.push_event(SimEvent::TransferStarted {
+            target_body_id: target_sel.body_id,
+            arrival_sim_seconds: arrival,
+            injection_cost_usd: injection_cost,
+        });
+        Ok(())
+    }
+
+    /// Arrival: automatic capture into the reserved parking orbit. The
+    /// propellant was deducted at departure, so this can never strand.
+    fn complete_arrival(&mut self) {
+        let Some(craft) = self.spacecraft.as_mut() else {
+            return;
+        };
+        let Some(transfer) = craft.transfer.take() else {
+            return;
+        };
+        let target = self
+            .bodies
+            .get(&transfer.target_body_id)
+            .expect("transfer target validated at departure");
+        craft.body_id.clone_from(&target.id);
+        craft.elements = Some(circular_orbit(
+            target.radius_km,
+            transfer.capture_altitude_km,
+            transfer.capture_inclination_deg,
+            transfer.arrival_sim_seconds,
+        ));
+        craft.phase = CraftPhase::OnOrbit;
+        craft.total_delta_v_used_km_s += transfer.capture_dv_km_s;
+        craft.transfer_target = None;
+        let target_id = target.id.clone();
+        let default_station = self
+            .ground_stations
+            .iter()
+            .find(|st| Self::station_reachable(st, &target_id))
+            .map(|st| st.id.clone());
+        let craft = self.spacecraft.as_mut().expect("still here");
+        craft.downlink_station_id = default_station;
+        self.pass_active.fill(false);
+        self.push_event(SimEvent::TransferArrived { body_id: target_id });
+        self.push_event(SimEvent::CaptureExecuted {
+            delta_v_km_s: transfer.capture_dv_km_s,
+        });
     }
 
     pub fn apply_action(&mut self, action: PlayerAction) -> Result<(), SimError> {
@@ -270,7 +420,7 @@ impl SimState {
             }
             PlayerAction::SetTimeAccel { multiplier } => {
                 // 0 pauses the simulation.
-                self.clock.time_accel = multiplier.clamp(0.0, 10_000.0);
+                self.clock.time_accel = multiplier.clamp(0.0, 100_000.0);
             }
             PlayerAction::ProgradeBurn { delta_v_km_s } => {
                 let isp_mult = self.company.isp_multiplier;
@@ -344,9 +494,16 @@ impl SimState {
                 }
             }
             PlayerAction::Decommission => {
-                let salvage = {
-                    let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
-                    craft.bus.launch_cost_usd * SALVAGE_FRACTION
+                let craft = self
+                    .spacecraft
+                    .as_ref()
+                    .ok_or_else(|| SimError::InvalidAction("no spacecraft".into()))?;
+                let salvage = match craft.phase {
+                    CraftPhase::OnOrbit => craft.bus.launch_cost_usd * SALVAGE_FRACTION,
+                    // Deep space has no salvage yard: abandoning a cruise
+                    // forfeits the craft outright.
+                    CraftPhase::Transfer => 0.0,
+                    CraftPhase::Design => return Err(SimError::WrongPhase),
                 };
                 self.spacecraft = None;
                 // Stale pass edges would suppress the next mission's PassStarted events.
@@ -426,6 +583,53 @@ impl SimState {
                     message: format!("Game mode: {:?}", self.company.game_mode),
                 });
             }
+            PlayerAction::SetTransferTarget {
+                body_id,
+                capture_altitude_km,
+                capture_inclination_deg,
+            } => {
+                let target = self
+                    .bodies
+                    .get(&body_id)
+                    .ok_or_else(|| SimError::Content(format!("unknown body: {body_id}")))?;
+                let altitude = capture_altitude_km.clamp(
+                    target.min_parking_altitude_km,
+                    target.max_parking_altitude_km,
+                );
+                let inclination = capture_inclination_deg.clamp(0.0, 98.0);
+                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+                craft.transfer_target = Some(crate::spacecraft::TransferTarget {
+                    body_id,
+                    capture_altitude_km: altitude,
+                    capture_inclination_deg: inclination,
+                });
+            }
+            PlayerAction::BeginTransfer => {
+                self.begin_transfer()?;
+            }
+            PlayerAction::WarpTo { target_sim_seconds } => {
+                if !target_sim_seconds.is_finite() || target_sim_seconds <= self.clock.sim_seconds {
+                    return Err(SimError::InvalidAction(
+                        "warp target must be a future sim time".into(),
+                    ));
+                }
+                let stride = (target_sim_seconds - self.clock.sim_seconds).min(WARP_CHUNK_SECONDS);
+                let mut advanced = 0.0;
+                while advanced < stride {
+                    let dt = (stride - advanced).min(1.0);
+                    self.clock.sim_seconds += dt;
+                    self.clock.tick += 1;
+                    self.sim_tick(dt);
+                    advanced += dt;
+                    if matches!(
+                        self.company.outcome,
+                        Some(GameOutcome::Bankrupt | GameOutcome::ReputationLost)
+                    ) {
+                        break;
+                    }
+                }
+                self.push_event(SimEvent::WarpCompleted { seconds: advanced });
+            }
             PlayerAction::LoadScenario { scenario_id } => {
                 self.apply_scenario(&scenario_id)?;
                 self.push_event(SimEvent::ActionApplied {
@@ -485,6 +689,20 @@ impl SimState {
         let Some(craft_ref) = self.spacecraft.as_ref() else {
             return;
         };
+        if craft_ref.phase == CraftPhase::Transfer {
+            // Hibernated cruise: no power/imaging/pass/anomaly processing —
+            // only the arrival check (inside the 1 s tick, so warp and
+            // manual acceleration are bit-identical).
+            if craft_ref
+                .transfer
+                .as_ref()
+                .is_some_and(|t| self.clock.sim_seconds >= t.arrival_sim_seconds)
+            {
+                self.complete_arrival();
+                self.check_contract();
+            }
+            return;
+        }
         if craft_ref.phase != CraftPhase::OnOrbit {
             return;
         }
@@ -646,7 +864,9 @@ impl SimState {
                 .downlink_station_id
                 .as_ref()
                 .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                .map(|s| Self::station_bandwidth_for(s, body));
+                .map(|s| {
+                    Self::station_bandwidth_for(s, body, self.company.deep_space_comms_multiplier)
+                });
             let rate = craft.downlink_rate_mb_s(comms_mult, station_bandwidth, sim_seconds);
             transferred = (rate * dt).min(craft.buffer_mb);
             craft.buffer_mb -= transferred;
@@ -779,12 +999,13 @@ impl SimState {
         if self.company.game_mode != GameMode::Campaign || self.company.outcome.is_some() {
             return 0.0;
         }
-        let on_orbit_cost = self
-            .spacecraft
-            .as_ref()
-            .filter(|c| c.phase == CraftPhase::OnOrbit)
-            .map_or(0.0, |c| c.bus.ops_cost_usd_per_day);
-        BASE_OVERHEAD_USD_PER_DAY + on_orbit_cost
+        let craft_cost = self.spacecraft.as_ref().map_or(0.0, |c| match c.phase {
+            CraftPhase::OnOrbit => c.bus.ops_cost_usd_per_day,
+            // Hibernated cruise: a skeleton crew on console.
+            CraftPhase::Transfer => c.bus.ops_cost_usd_per_day * HIBERNATION_OPS_FRACTION,
+            CraftPhase::Design => 0.0,
+        });
+        (BASE_OVERHEAD_USD_PER_DAY + craft_cost) * self.company.ops_cost_multiplier
     }
 
     /// Dropping the return value loses the events permanently.
@@ -903,7 +1124,13 @@ impl SimState {
                         .downlink_station_id
                         .as_ref()
                         .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                        .map(|s| Self::station_bandwidth_for(s, craft_body)),
+                        .map(|s| {
+                            Self::station_bandwidth_for(
+                                s,
+                                craft_body,
+                                self.company.deep_space_comms_multiplier,
+                            )
+                        }),
                     self.clock.sim_seconds,
                 ),
                 imaging_rate_mb_s: craft.imaging_rate_mb_s(sunlight, self.clock.sim_seconds),
@@ -927,6 +1154,20 @@ impl SimState {
                 command_queue: craft.command_queue.clone(),
                 active_anomaly: anomaly_type,
                 anomaly_label,
+                transfer: craft.transfer.as_ref().map(|t| {
+                    let span = (t.arrival_sim_seconds - t.departure_sim_seconds).max(1.0);
+                    TransferSnapshot {
+                        origin_body_id: t.origin_body_id.clone(),
+                        target_body_id: t.target_body_id.clone(),
+                        frame_body_id: t.frame_body_id.clone(),
+                        departure_sim_seconds: t.departure_sim_seconds,
+                        arrival_sim_seconds: t.arrival_sim_seconds,
+                        progress: ((self.clock.sim_seconds - t.departure_sim_seconds) / span)
+                            .clamp(0.0, 1.0),
+                        capture_dv_km_s: t.capture_dv_km_s,
+                    }
+                }),
+                transfer_planner: self.transfer_planner_snapshot(craft),
                 light_delay_seconds: {
                     const C_KM_S: f64 = 299_792.458;
                     let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
@@ -1012,7 +1253,11 @@ impl SimState {
                     longitude_deg: station.longitude_deg,
                     elevation_deg: elevation,
                     in_pass,
-                    bandwidth_mbps: Self::station_bandwidth_for(station, craft_body),
+                    bandwidth_mbps: Self::station_bandwidth_for(
+                        station,
+                        craft_body,
+                        self.company.deep_space_comms_multiplier,
+                    ),
                     next_pass_in_seconds,
                     body_id: station.body_id.clone(),
                     dsn: station.dsn,
@@ -1072,7 +1317,91 @@ impl SimState {
             phase: game_phase,
             outcome: self.company.outcome,
             ops_cost_usd_per_day: self.current_ops_cost_usd_per_day(),
+            transfers_unlocked: self.transfers_unlocked(),
         }
+    }
+
+    /// Sandbox always; campaign once Deep Space Operations is researched.
+    fn transfers_unlocked(&self) -> bool {
+        self.company.game_mode == GameMode::Sandbox
+            || self
+                .company
+                .unlocked_tech
+                .iter()
+                .any(|t| t == "deep_space_ops")
+    }
+
+    /// Planner readout for the craft's selected destination.
+    fn transfer_planner_snapshot(&self, craft: &Spacecraft) -> Option<TransferPlannerSnapshot> {
+        if craft.phase != CraftPhase::OnOrbit {
+            return None;
+        }
+        let target_sel = craft.transfer_target.as_ref()?;
+        let elements = craft.elements?;
+        let origin_idx = self.bodies.idx(&craft.body_id)?;
+        let target_idx = self.bodies.idx(&target_sel.body_id)?;
+        let now = self.clock.sim_seconds;
+
+        let plan = crate::orbit::plan_transfer(
+            &self.bodies,
+            origin_idx,
+            target_idx,
+            elements.semi_major_axis_km,
+            target_sel.capture_altitude_km,
+            now,
+        )
+        .ok()?;
+        let window_open =
+            crate::orbit::window_open(&self.bodies, origin_idx, target_idx, now).ok()?;
+        let next_window =
+            crate::orbit::next_launch_window(&self.bodies, origin_idx, target_idx, now).ok()?;
+        let target_body = self.bodies.body(target_idx);
+
+        // Sibling transfers expose the phase angles; moon-style ones don't
+        // have a meaningful one (windows are effectively always open).
+        let sibling = self.bodies.body(origin_idx).parent == target_body.parent;
+        let (phase, required) = if sibling {
+            (
+                Some(crate::orbit::phase_angle_deg(
+                    &self.bodies,
+                    origin_idx,
+                    target_idx,
+                    now,
+                )),
+                crate::orbit::required_phase_angle_deg(&self.bodies, origin_idx, target_idx).ok(),
+            )
+        } else {
+            (None, None)
+        };
+
+        let capture_dv = if target_body.has_atmosphere {
+            plan.capture_dv_km_s * self.company.capture_dv_multiplier
+        } else {
+            plan.capture_dv_km_s
+        };
+        let isp = craft.bus.isp_s * self.company.isp_multiplier;
+        let capture_propellant_kg = crate::orbit::propellant_for_delta_v(
+            capture_dv,
+            craft.dry_mass_kg(),
+            craft.propellant_kg,
+            isp,
+        );
+        let injection_cost_usd = craft.bus.launch_cost_usd * target_body.injection_cost_multiplier;
+
+        Some(TransferPlannerSnapshot {
+            target_body_id: target_sel.body_id.clone(),
+            window_open,
+            phase_angle_deg: phase,
+            required_phase_angle_deg: required,
+            next_window_sim_seconds: next_window,
+            transfer_seconds: plan.transfer_seconds,
+            departure_dv_km_s: plan.departure_dv_km_s,
+            capture_dv_km_s: capture_dv,
+            capture_propellant_kg,
+            injection_cost_usd,
+            affordable: self.company.can_afford(injection_cost_usd),
+            propellant_ok: capture_propellant_kg <= craft.propellant_kg + 1e-6,
+        })
     }
 
     fn derive_game_phase(&self) -> GamePhase {
@@ -1092,6 +1421,7 @@ impl SimState {
                     GamePhase::Design
                 }
             }
+            Some(CraftPhase::Transfer) => GamePhase::InTransit,
             Some(CraftPhase::OnOrbit) => {
                 if self.company.active_contract.is_none()
                     && !self.company.completed_contracts.is_empty()

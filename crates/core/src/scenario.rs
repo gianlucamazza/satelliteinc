@@ -19,6 +19,9 @@ pub struct ScenarioTemplate {
     pub body_id: String,
     #[serde(default)]
     pub contract_id: Option<String>,
+    /// Tech already researched at scenario start (no cost).
+    #[serde(default)]
+    pub starting_tech: Vec<String>,
     #[serde(default = "default_alt")]
     pub altitude_km: f64,
     #[serde(default = "default_inc")]
@@ -69,6 +72,11 @@ impl SimState {
             &self.content,
         );
         company.reputation = scenario.starting_reputation;
+        for tech_id in &scenario.starting_tech {
+            if let Some(tech) = self.content.tech(tech_id) {
+                company.apply_tech(tech);
+            }
+        }
         self.company = company;
 
         let mut craft = Spacecraft::new_from_bus(&bus, &bus.name);

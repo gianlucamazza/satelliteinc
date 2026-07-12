@@ -27,7 +27,8 @@
       },
       "min_parking_altitude_km": 200.0,
       "max_parking_altitude_km": 2000.0,
-      "texture": "earth"
+      "texture": "earth",
+      "has_atmosphere": true
     },
     {
       "id": "moon",
@@ -52,7 +53,8 @@
       "anomaly_flavor": {
         "power_glitch_label": "Mascon pointing drift",
         "buffer_corruption_label": "Regolith static discharge"
-      }
+      },
+      "injection_cost_multiplier": 1.5
     },
     {
       "id": "venus",
@@ -76,7 +78,9 @@
       "anomaly_rate_multiplier": 1.5,
       "anomaly_flavor": {
         "power_glitch_label": "Thermal stress"
-      }
+      },
+      "injection_cost_multiplier": 2.0,
+      "has_atmosphere": true
     },
     {
       "id": "mars",
@@ -102,7 +106,9 @@
         "comms_dropout_label": "Dust storm",
         "comms_dropout_duration_s": 7200.0,
         "solar_penalty_while_active": 0.5
-      }
+      },
+      "injection_cost_multiplier": 2.2,
+      "has_atmosphere": true
     },
     {
       "id": "jupiter",
@@ -126,7 +132,9 @@
       "anomaly_rate_multiplier": 2.0,
       "anomaly_flavor": {
         "buffer_corruption_label": "Radiation upset"
-      }
+      },
+      "injection_cost_multiplier": 3.0,
+      "has_atmosphere": true
     }
   ],
   "buses": [
@@ -334,6 +342,56 @@
       "reputation_required": 120,
       "reputation_reward": 20,
       "max_altitude_km": 1000
+    },
+    {
+      "id": "farside_survey",
+      "name": "Farside Radio Survey",
+      "body_id": "moon",
+      "description": "Collect on the farside, downlink when Earth rises: 800 MB in 14 days.",
+      "downlink_mb": 800,
+      "deadline_days": 14,
+      "payout_usd": 520000,
+      "reputation_required": 75,
+      "reputation_reward": 12,
+      "max_altitude_km": 120
+    },
+    {
+      "id": "mascon_gravimetry",
+      "name": "Mascon Gravimetry",
+      "body_id": "moon",
+      "description": "Skim below 60 km where the mascons pull: 600 MB in 12 days.",
+      "downlink_mb": 600,
+      "deadline_days": 12,
+      "payout_usd": 580000,
+      "reputation_required": 80,
+      "reputation_reward": 12,
+      "max_altitude_km": 60
+    },
+    {
+      "id": "polar_ice_hunt",
+      "name": "Polar Ice Hunt",
+      "body_id": "moon",
+      "description": "Neutron spectrometry over the poles: 1 GB, inclination >= 85 deg.",
+      "downlink_mb": 1024,
+      "deadline_days": 18,
+      "payout_usd": 700000,
+      "reputation_required": 85,
+      "reputation_reward": 15,
+      "max_altitude_km": 100,
+      "min_inclination_deg": 85
+    },
+    {
+      "id": "lunar_gateway_recon",
+      "name": "Gateway Site Recon",
+      "body_id": "moon",
+      "description": "Map the Gateway candidate sites: 2.5 GB from 100-500 km.",
+      "downlink_mb": 2560,
+      "deadline_days": 30,
+      "payout_usd": 1300000,
+      "reputation_required": 90,
+      "reputation_reward": 25,
+      "min_altitude_km": 100,
+      "max_altitude_km": 500
     }
   ],
   "tech_tree": [
@@ -404,6 +462,46 @@
         "redundancy_mk1"
       ],
       "anomaly_mtbf_multiplier": 1.6
+    },
+    {
+      "id": "deep_space_ops",
+      "name": "Deep Space Operations License",
+      "cost_usd": 150000,
+      "requires": [
+        "smallsat_bus"
+      ],
+      "unlocks_bus": "explorer",
+      "description": "Certify the company for missions beyond Earth orbit. Unlocks the Explorer 200 and interplanetary transfer planning."
+    },
+    {
+      "id": "high_gain_antenna",
+      "name": "High-Gain Antenna",
+      "cost_usd": 140000,
+      "requires": [
+        "comms_mk3"
+      ],
+      "deep_space_comms_multiplier": 1.5,
+      "description": "+50% bandwidth on deep-space links."
+    },
+    {
+      "id": "aerobraking",
+      "name": "Aerobraking Certification",
+      "cost_usd": 160000,
+      "requires": [
+        "propulsion_mk2"
+      ],
+      "capture_dv_multiplier": 0.6,
+      "description": "Use the atmosphere at Mars or Venus: capture burns cost 40% less delta-v."
+    },
+    {
+      "id": "mission_automation",
+      "name": "Mission Automation Suite",
+      "cost_usd": 120000,
+      "requires": [
+        "redundancy_mk1"
+      ],
+      "ops_cost_multiplier": 0.85,
+      "description": "Fewer people on console: -15% daily operating costs, everywhere."
     }
   ],
   "tle_catalog": [
@@ -487,6 +585,24 @@
       "body_id": "venus",
       "altitude_km": 500,
       "inclination_deg": 60
+    },
+    {
+      "id": "lunar_express",
+      "name": "Tutorial \u2014 Lunar Express",
+      "description": "Explorer fueled in LEO with Selene Cartography pre-accepted and deep-space ops certified: set the Moon as your transfer target, buy the injection, cruise, and map the poles.",
+      "game_mode": "campaign",
+      "starting_cash": 1400000,
+      "starting_reputation": 70,
+      "bus_id": "explorer",
+      "body_id": "earth",
+      "contract_id": "moon_mapper",
+      "altitude_km": 300,
+      "inclination_deg": 28,
+      "starting_tech": [
+        "comms_mk2",
+        "smallsat_bus",
+        "deep_space_ops"
+      ]
     }
   ]
 }

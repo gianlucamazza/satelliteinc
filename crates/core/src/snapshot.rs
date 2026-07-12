@@ -34,6 +34,8 @@ pub struct Snapshot {
     pub outcome: Option<GameOutcome>,
     /// Current recurring burn rate (base overhead + on-orbit ops cost).
     pub ops_cost_usd_per_day: f64,
+    /// Whether interplanetary transfers are available to the company.
+    pub transfers_unlocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +44,7 @@ pub enum GamePhase {
     Design,
     AwaitingLaunch,
     OnOrbit,
+    InTransit,
     ContractComplete,
     Victory,
     GameOver,
@@ -108,6 +111,41 @@ pub struct SpacecraftSnapshot {
     pub anomaly_label: Option<String>,
     /// One-way light time to Earth (flavor; 0 in Earth orbit).
     pub light_delay_seconds: f64,
+    /// Cruise in progress (None on orbit / in design).
+    pub transfer: Option<TransferSnapshot>,
+    /// Planner readout for the selected destination (OnOrbit only).
+    pub transfer_planner: Option<TransferPlannerSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferSnapshot {
+    pub origin_body_id: String,
+    pub target_body_id: String,
+    pub frame_body_id: String,
+    pub departure_sim_seconds: f64,
+    pub arrival_sim_seconds: f64,
+    /// 0..1 fraction of the cruise elapsed.
+    pub progress: f64,
+    pub capture_dv_km_s: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferPlannerSnapshot {
+    pub target_body_id: String,
+    pub window_open: bool,
+    /// Sibling transfers only (None for a moon of the current body).
+    pub phase_angle_deg: Option<f64>,
+    pub required_phase_angle_deg: Option<f64>,
+    pub next_window_sim_seconds: f64,
+    pub transfer_seconds: f64,
+    /// Physical injection burn (paid by the launch provider).
+    pub departure_dv_km_s: f64,
+    /// Capture burn from the craft's tanks (aerobraking applied).
+    pub capture_dv_km_s: f64,
+    pub capture_propellant_kg: f64,
+    pub injection_cost_usd: f64,
+    pub affordable: bool,
+    pub propellant_ok: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

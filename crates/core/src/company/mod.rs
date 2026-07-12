@@ -129,6 +129,12 @@ pub struct CompanyState {
     pub isp_multiplier: f64,
     #[serde(default = "default_one")]
     pub anomaly_mtbf_multiplier: f64,
+    #[serde(default = "default_one")]
+    pub ops_cost_multiplier: f64,
+    #[serde(default = "default_one")]
+    pub deep_space_comms_multiplier: f64,
+    #[serde(default = "default_one")]
+    pub capture_dv_multiplier: f64,
     pub unlocked_buses: Vec<String>,
     /// Terminal campaign state; None while the game is live.
     #[serde(default)]
@@ -154,6 +160,9 @@ impl CompanyState {
             solar_multiplier: 1.0,
             isp_multiplier: 1.0,
             anomaly_mtbf_multiplier: 1.0,
+            ops_cost_multiplier: 1.0,
+            deep_space_comms_multiplier: 1.0,
+            capture_dv_multiplier: 1.0,
             unlocked_buses: Vec::new(),
             outcome: None,
         };
@@ -222,6 +231,9 @@ impl CompanyState {
         self.solar_multiplier *= tech.solar_multiplier;
         self.isp_multiplier *= tech.isp_multiplier;
         self.anomaly_mtbf_multiplier *= tech.anomaly_mtbf_multiplier;
+        self.ops_cost_multiplier *= tech.ops_cost_multiplier;
+        self.deep_space_comms_multiplier *= tech.deep_space_comms_multiplier;
+        self.capture_dv_multiplier *= tech.capture_dv_multiplier;
         if let Some(bus_id) = &tech.unlocks_bus
             && !self.unlocked_buses.contains(bus_id)
         {

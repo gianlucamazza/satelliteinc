@@ -113,6 +113,12 @@ pub fn mean_to_true_anomaly_deg(mean_anomaly_deg: f64, eccentricity: f64) -> f64
     eccentric_to_true_anomaly(ea, eccentricity).to_degrees()
 }
 
+/// True anomaly (deg) to mean anomaly (deg) — inverse of
+/// `mean_to_true_anomaly_deg`.
+pub fn true_to_mean_anomaly_deg(true_anomaly_deg: f64, eccentricity: f64) -> f64 {
+    true_anomaly_to_mean(true_anomaly_deg.to_radians(), eccentricity).to_degrees()
+}
+
 fn true_anomaly_to_mean(nu: f64, e: f64) -> f64 {
     if e < 1e-10 {
         return nu;

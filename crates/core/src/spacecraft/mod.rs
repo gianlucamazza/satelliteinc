@@ -12,6 +12,34 @@ use crate::orbit::{KeplerElements, delta_v_capacity_km_s};
 pub enum CraftPhase {
     Design,
     OnOrbit,
+    /// Coasting on a transfer ellipse between bodies (hibernated).
+    Transfer,
+}
+
+/// Player-selected destination for the next interplanetary transfer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferTarget {
+    pub body_id: String,
+    pub capture_altitude_km: f64,
+    pub capture_inclination_deg: f64,
+}
+
+/// A transfer in progress: fully self-contained so it serializes with the
+/// craft and survives save/load mid-cruise.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveTransfer {
+    pub origin_body_id: String,
+    pub target_body_id: String,
+    /// Frame the craft's `elements` live in during the cruise.
+    pub frame_body_id: String,
+    pub departure_sim_seconds: f64,
+    pub arrival_sim_seconds: f64,
+    pub capture_altitude_km: f64,
+    pub capture_inclination_deg: f64,
+    /// Effective capture burn (aerobraking tech already applied).
+    pub capture_dv_km_s: f64,
+    /// Propellant deducted up front so the capture can never strand.
+    pub capture_propellant_reserved_kg: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +82,10 @@ pub struct Spacecraft {
     pub active_anomaly: Option<ActiveAnomaly>,
     pub anomaly_cooldown_until: f64,
     pub safe_mode_until: f64,
+    #[serde(default)]
+    pub transfer_target: Option<TransferTarget>,
+    #[serde(default)]
+    pub transfer: Option<ActiveTransfer>,
 }
 
 impl Spacecraft {
@@ -82,6 +114,8 @@ impl Spacecraft {
             active_anomaly: None,
             anomaly_cooldown_until: 0.0,
             safe_mode_until: 0.0,
+            transfer_target: None,
+            transfer: None,
         }
     }
 

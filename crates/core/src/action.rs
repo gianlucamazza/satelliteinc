@@ -34,8 +34,22 @@ pub enum PlayerAction {
     },
     StartHohmann,
     CompleteHohmann,
-    /// Retire the on-orbit satellite for a partial salvage refund.
+    /// Retire the on-orbit satellite for a partial salvage refund
+    /// (forfeited without salvage during a transfer).
     Decommission,
+    /// Choose the interplanetary destination and capture orbit.
+    SetTransferTarget {
+        body_id: String,
+        capture_altitude_km: f64,
+        capture_inclination_deg: f64,
+    },
+    /// Buy the injection and depart (window must be open).
+    BeginTransfer,
+    /// Advance sim time in one deterministic stride (chunked at ~2e6 s per
+    /// call; re-issue until the target time is reached).
+    WarpTo {
+        target_sim_seconds: f64,
+    },
     SetPayloadMode {
         mode: PayloadMode,
     },

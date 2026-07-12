@@ -51,6 +51,16 @@ pub struct CelestialBodyDef {
     /// Optional per-body anomaly reskin/behavior.
     #[serde(default)]
     pub anomaly_flavor: Option<AnomalyFlavorDef>,
+    /// Launch-provider surcharge for an injection toward this body.
+    #[serde(default = "default_injection_multiplier")]
+    pub injection_cost_multiplier: f64,
+    /// Whether aerobraking can shave the capture burn here.
+    #[serde(default)]
+    pub has_atmosphere: bool,
+}
+
+fn default_injection_multiplier() -> f64 {
+    2.0
 }
 
 /// Per-body anomaly flavor: relabel the base archetypes and optionally
@@ -114,6 +124,8 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             dsn_bandwidth_factor: 1.0,
             anomaly_rate_multiplier: 1.0,
             anomaly_flavor: None,
+            injection_cost_multiplier: 2.0,
+            has_atmosphere: false,
         },
         CelestialBodyDef {
             id: "earth".into(),
@@ -137,6 +149,8 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             dsn_bandwidth_factor: 1.0,
             anomaly_rate_multiplier: 1.0,
             anomaly_flavor: None,
+            injection_cost_multiplier: 2.0,
+            has_atmosphere: true,
         },
     ]
 }
@@ -242,6 +256,15 @@ pub struct TechNode {
     /// Multiplies the mean time between anomalies (higher = rarer).
     #[serde(default = "default_one")]
     pub anomaly_mtbf_multiplier: f64,
+    /// Multiplies daily ops cost (<1 = cheaper missions).
+    #[serde(default = "default_one")]
+    pub ops_cost_multiplier: f64,
+    /// Multiplies DSN link bandwidth to craft beyond Earth.
+    #[serde(default = "default_one")]
+    pub deep_space_comms_multiplier: f64,
+    /// Multiplies capture burn Δv at bodies with an atmosphere (aerobraking).
+    #[serde(default = "default_one")]
+    pub capture_dv_multiplier: f64,
 }
 
 fn default_one() -> f64 {
@@ -439,6 +462,9 @@ impl GameContent {
                 || tech.solar_multiplier <= 0.0
                 || tech.isp_multiplier <= 0.0
                 || tech.anomaly_mtbf_multiplier <= 0.0
+                || tech.ops_cost_multiplier <= 0.0
+                || tech.deep_space_comms_multiplier <= 0.0
+                || tech.capture_dv_multiplier <= 0.0
             {
                 return Err(SimError::Content(format!(
                     "tech '{}' has non-positive multipliers",
@@ -468,6 +494,14 @@ impl GameContent {
                     "scenario '{}' references unknown body '{}'",
                     scenario.id, scenario.body_id
                 )));
+            }
+            for tech_id in &scenario.starting_tech {
+                if self.tech(tech_id).is_none() {
+                    return Err(SimError::Content(format!(
+                        "scenario '{}' references unknown tech '{tech_id}'",
+                        scenario.id
+                    )));
+                }
             }
             if self.bus(&scenario.bus_id).is_none() {
                 return Err(SimError::Content(format!(

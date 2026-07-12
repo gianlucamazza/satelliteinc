@@ -34,6 +34,14 @@ const STEPS = [
     body: "Inclination can't change on orbit. Decommission (15% salvage) and re-launch with a new design to meet polar contracts.",
   },
   {
+    title: "Transfer windows",
+    body: "Beyond Earth: research Deep Space Operations, pick a destination in the Transfer tab, and wait for the window — planets align on their own schedule (Mars: every ~26 months). The injection is bought from your launch provider in cash.",
+  },
+  {
+    title: "Cruise & capture",
+    body: "During the cruise the craft hibernates at 10% ops cost. Propellant for the capture burn is reserved before departure, so check the Δv budget first. Warp to arrival — capture is automatic.",
+  },
+  {
     title: "Grow and win",
     body: "Earn cash and reputation, invest in R&D, unlock buses. Complete every contract at least once to win. Press ? anytime to reopen this guide.",
   },

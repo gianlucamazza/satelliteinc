@@ -2,13 +2,14 @@ export type GamePhase =
   | "design"
   | "awaiting_launch"
   | "on_orbit"
+  | "in_transit"
   | "contract_complete"
   | "victory"
   | "game_over";
 
 export type GameOutcome = "victory" | "bankrupt" | "reputation_lost";
 
-export type CraftPhase = "Design" | "OnOrbit";
+export type CraftPhase = "Design" | "OnOrbit" | "Transfer";
 export type GameMode = "sandbox" | "campaign";
 export type PayloadMode = "imaging" | "safe" | "downlink_priority";
 
@@ -138,6 +139,36 @@ export interface SpacecraftSnapshot {
   anomaly_label: string | null;
   /** One-way light time to Earth (flavor; ~0 in Earth orbit). */
   light_delay_seconds: number;
+  /** Cruise in progress (null on orbit / in design). */
+  transfer: TransferSnapshot | null;
+  /** Planner readout for the selected destination (OnOrbit only). */
+  transfer_planner: TransferPlannerSnapshot | null;
+}
+
+export interface TransferSnapshot {
+  origin_body_id: string;
+  target_body_id: string;
+  frame_body_id: string;
+  departure_sim_seconds: number;
+  arrival_sim_seconds: number;
+  /** 0..1 fraction of the cruise elapsed. */
+  progress: number;
+  capture_dv_km_s: number;
+}
+
+export interface TransferPlannerSnapshot {
+  target_body_id: string;
+  window_open: boolean;
+  phase_angle_deg: number | null;
+  required_phase_angle_deg: number | null;
+  next_window_sim_seconds: number;
+  transfer_seconds: number;
+  departure_dv_km_s: number;
+  capture_dv_km_s: number;
+  capture_propellant_kg: number;
+  injection_cost_usd: number;
+  affordable: boolean;
+  propellant_ok: boolean;
 }
 
 export interface StationSnapshot {
@@ -177,6 +208,7 @@ export interface Snapshot {
   phase: GamePhase;
   outcome: GameOutcome | null;
   ops_cost_usd_per_day: number;
+  transfers_unlocked: boolean;
 }
 
 export interface BusTemplate {
@@ -283,6 +315,15 @@ export type SimEvent =
       target_altitude_km: number;
     }
   | { type: "hohmann_transfer_complete"; target_altitude_km: number }
+  | {
+      type: "transfer_started";
+      target_body_id: string;
+      arrival_sim_seconds: number;
+      injection_cost_usd: number;
+    }
+  | { type: "transfer_arrived"; body_id: string }
+  | { type: "capture_executed"; delta_v_km_s: number }
+  | { type: "warp_completed"; seconds: number }
   | { type: "anomaly_started"; kind: string; label: string }
   | { type: "anomaly_cleared"; kind: string }
   | {
