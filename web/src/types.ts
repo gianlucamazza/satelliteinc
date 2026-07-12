@@ -35,6 +35,9 @@ export interface ActiveContract {
   stations_used: string[];
   /** Body whose orbit fulfills this contract. */
   body_id: string;
+  advance_paid_usd: number;
+  min_on_station_days: number;
+  on_station_seconds: number;
   min_altitude_km: number | null;
   max_altitude_km: number | null;
   min_inclination_deg: number | null;
@@ -209,6 +212,20 @@ export interface Snapshot {
   outcome: GameOutcome | null;
   ops_cost_usd_per_day: number;
   transfers_unlocked: boolean;
+  programs: ProgramSnapshot[];
+}
+
+export interface ProgramSnapshot {
+  id: string;
+  name: string;
+  body_id: string;
+  buyin_usd: number;
+  reputation_required: number;
+  requires_keystone: string | null;
+  keystone_done: boolean;
+  unlocked: boolean;
+  completed: boolean;
+  completion_grant_usd: number;
 }
 
 export interface BusTemplate {
@@ -324,6 +341,8 @@ export type SimEvent =
   | { type: "transfer_arrived"; body_id: string }
   | { type: "capture_executed"; delta_v_km_s: number }
   | { type: "warp_completed"; seconds: number }
+  | { type: "program_unlocked"; program_id: string }
+  | { type: "program_completed"; program_id: string; grant_usd: number }
   | { type: "anomaly_started"; kind: string; label: string }
   | { type: "anomaly_cleared"; kind: string }
   | {

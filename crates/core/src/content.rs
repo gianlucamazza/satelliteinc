@@ -16,6 +16,32 @@ pub struct GameContent {
     pub tle_catalog: Vec<crate::orbit::TleEntry>,
     #[serde(default)]
     pub scenarios: Vec<crate::scenario::ScenarioTemplate>,
+    /// Campaign structure: one Program per body, gated by reputation, a
+    /// cash buy-in, and the previous Program's keystone contract.
+    #[serde(default)]
+    pub programs: Vec<ProgramDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgramDef {
+    pub id: String,
+    pub name: String,
+    pub body_id: String,
+    #[serde(default)]
+    pub buyin_usd: f64,
+    #[serde(default)]
+    pub reputation_required: f64,
+    /// Contract that must be completed before this Program can be bought.
+    #[serde(default)]
+    pub requires_keystone: Option<String>,
+    /// This Program's own keystone (feeds the next gate).
+    pub keystone_contract_id: String,
+    /// One-time payout when every contract of the body is completed.
+    #[serde(default)]
+    pub completion_grant_usd: f64,
+    /// Unlocked from the start (Earth).
+    #[serde(default)]
+    pub unlocked_by_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +254,13 @@ pub struct ContractTemplate {
     /// Body whose orbit fulfills this contract.
     #[serde(default = "default_body_id")]
     pub body_id: String,
+    /// Fraction of the payout advanced on acceptance (clawed back with an
+    /// extra reputation hit on failure).
+    #[serde(default)]
+    pub advance_fraction: f64,
+    /// Cumulative days the craft must spend in a compliant orbit.
+    #[serde(default)]
+    pub min_on_station_days: f64,
     /// Orbit requirements: contract progress only accrues while these hold.
     #[serde(default)]
     pub min_altitude_km: Option<f64>,
@@ -488,12 +521,64 @@ impl GameContent {
                 )));
             }
         }
+        for program in &self.programs {
+            if !self.bodies.iter().any(|b| b.id == program.body_id) {
+                return Err(SimError::Content(format!(
+                    "program '{}' references unknown body '{}'",
+                    program.id, program.body_id
+                )));
+            }
+            if self.contract(&program.keystone_contract_id).is_none() {
+                return Err(SimError::Content(format!(
+                    "program '{}' has unknown keystone '{}'",
+                    program.id, program.keystone_contract_id
+                )));
+            }
+            if let Some(req) = &program.requires_keystone
+                && self.contract(req).is_none()
+            {
+                return Err(SimError::Content(format!(
+                    "program '{}' requires unknown keystone '{req}'",
+                    program.id
+                )));
+            }
+            if self
+                .programs
+                .iter()
+                .filter(|other| other.body_id == program.body_id)
+                .count()
+                > 1
+            {
+                return Err(SimError::Content(format!(
+                    "body '{}' has more than one program",
+                    program.body_id
+                )));
+            }
+        }
+        for contract in &self.contracts {
+            if !(0.0..=0.5).contains(&contract.advance_fraction)
+                || contract.min_on_station_days < 0.0
+            {
+                return Err(SimError::Content(format!(
+                    "contract '{}' has invalid advance/on-station terms",
+                    contract.id
+                )));
+            }
+        }
         for scenario in &self.scenarios {
             if !self.bodies.iter().any(|b| b.id == scenario.body_id) {
                 return Err(SimError::Content(format!(
                     "scenario '{}' references unknown body '{}'",
                     scenario.id, scenario.body_id
                 )));
+            }
+            for program_id in &scenario.starting_programs {
+                if self.program(program_id).is_none() {
+                    return Err(SimError::Content(format!(
+                        "scenario '{}' references unknown program '{program_id}'",
+                        scenario.id
+                    )));
+                }
             }
             for tech_id in &scenario.starting_tech {
                 if self.tech(tech_id).is_none() {
@@ -537,6 +622,14 @@ impl GameContent {
     }
 
     #[must_use]
+    pub fn program_for_body(&self, body_id: &str) -> Option<&ProgramDef> {
+        self.programs.iter().find(|p| p.body_id == body_id)
+    }
+
+    pub fn program(&self, id: &str) -> Option<&ProgramDef> {
+        self.programs.iter().find(|p| p.id == id)
+    }
+
     pub fn scenario(&self, id: &str) -> Option<&crate::scenario::ScenarioTemplate> {
         self.scenarios.iter().find(|s| s.id == id)
     }

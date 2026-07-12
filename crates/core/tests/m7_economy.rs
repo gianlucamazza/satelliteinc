@@ -95,7 +95,7 @@ fn bankruptcy_fires_once_and_gates_actions() {
 }
 
 #[test]
-fn completing_all_contracts_wins_the_campaign() {
+fn completing_earth_contracts_completes_the_earth_program() {
     let mut sim = SimState::new(load_content()).unwrap();
     sim.apply_action(PlayerAction::SelectBus {
         bus_id: "cubesat".into(),
@@ -117,11 +117,19 @@ fn completing_all_contracts_wins_the_campaign() {
     }
     sim.check_contract();
 
-    assert_eq!(sim.company.outcome, Some(GameOutcome::Victory));
+    // Earth completion is a Program milestone now, not the campaign win —
+    // the grand victory needs every Program (Moon, Mars, Venus...) done.
+    assert_eq!(sim.company.outcome, None);
+    let events = sim.drain_events();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        SimEvent::ProgramCompleted { program_id, .. } if program_id == "earth_program"
+    )));
+    assert!(!events.iter().any(|e| matches!(e, SimEvent::GameWon)));
     assert!(
-        sim.drain_events()
-            .iter()
-            .any(|e| matches!(e, SimEvent::GameWon))
+        sim.company
+            .completed_programs
+            .contains(&"earth_program".to_string())
     );
     // Victory does not gate actions: play continues.
     assert!(

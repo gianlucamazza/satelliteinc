@@ -19,7 +19,7 @@ use crate::orbit::{
     eci_velocity_km_s, orbit_trail_samples, seconds_to_apsides,
 };
 use crate::snapshot::{
-    BodySnapshot, GamePhase, Snapshot, SpacecraftSnapshot, StationSnapshot,
+    BodySnapshot, GamePhase, ProgramSnapshot, Snapshot, SpacecraftSnapshot, StationSnapshot,
     TransferPlannerSnapshot, TransferSnapshot,
 };
 use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, Spacecraft};
@@ -372,13 +372,31 @@ impl SimState {
                     .contract(&contract_id)
                     .ok_or_else(|| SimError::Content(format!("unknown contract: {contract_id}")))?
                     .clone();
-                let is_repeat = self.company.game_mode == GameMode::Campaign
-                    && self.company.completed_contracts.contains(&contract_id);
-                let contract =
-                    ActiveContract::from_template(&template, self.clock.sim_seconds, is_repeat);
+                let completions = if self.company.game_mode == GameMode::Campaign {
+                    self.company.completions_of(&contract_id)
+                } else {
+                    0
+                };
+                let mut contract =
+                    ActiveContract::from_template(&template, self.clock.sim_seconds, completions);
+                // Interplanetary mobilization advance: cash up front, clawed
+                // back with interest in reputation on failure.
+                if completions == 0 && template.advance_fraction > 0.0 {
+                    let advance = contract.payout_usd * template.advance_fraction;
+                    contract.advance_paid_usd = advance;
+                    self.company.cash_usd += advance;
+                }
+                let advance = contract.advance_paid_usd;
                 self.company.active_contract = Some(contract);
                 self.push_event(SimEvent::ActionApplied {
-                    message: format!("Accepted contract: {}", template.name),
+                    message: if advance > 0.0 {
+                        format!(
+                            "Accepted contract: {} (+${:.0} advance)",
+                            template.name, advance
+                        )
+                    } else {
+                        format!("Accepted contract: {}", template.name)
+                    },
                 });
             }
             PlayerAction::Launch => {
@@ -606,6 +624,40 @@ impl SimState {
             }
             PlayerAction::BeginTransfer => {
                 self.begin_transfer()?;
+            }
+            PlayerAction::UnlockProgram { program_id } => {
+                let program = self
+                    .content
+                    .program(&program_id)
+                    .ok_or_else(|| SimError::Content(format!("unknown program: {program_id}")))?
+                    .clone();
+                if self.company.unlocked_programs.contains(&program.id) {
+                    return Err(SimError::InvalidAction("program already unlocked".into()));
+                }
+                if self.company.reputation < program.reputation_required {
+                    return Err(SimError::InvalidAction(format!(
+                        "requires reputation {:.0}",
+                        program.reputation_required
+                    )));
+                }
+                if let Some(keystone) = &program.requires_keystone
+                    && !self.company.completed_contracts.contains(keystone)
+                {
+                    return Err(SimError::InvalidAction(format!(
+                        "requires completing '{keystone}' first"
+                    )));
+                }
+                if !self.company.can_afford(program.buyin_usd) {
+                    self.push_event(SimEvent::InsufficientFunds {
+                        required_usd: program.buyin_usd,
+                    });
+                    return Err(SimError::InsufficientFunds(program.buyin_usd));
+                }
+                self.company.cash_usd -= program.buyin_usd;
+                self.company.unlocked_programs.push(program.id.clone());
+                self.push_event(SimEvent::ProgramUnlocked {
+                    program_id: program.id,
+                });
             }
             PlayerAction::WarpTo { target_sim_seconds } => {
                 if !target_sim_seconds.is_finite() || target_sim_seconds <= self.clock.sim_seconds {
@@ -885,6 +937,15 @@ impl SimState {
             }
         }
 
+        // Presence contracts: time in a compliant orbit counts on its own.
+        if let Some(contract) = self.company.active_contract.as_mut()
+            && contract.min_on_station_days > 0.0
+            && contract.body_id == craft_body_id
+            && contract.orbit_ok(&elements, radius)
+        {
+            contract.on_station_seconds += dt;
+        }
+
         for event in pass_events.into_iter().chain(anomaly_events) {
             self.push_event(event);
         }
@@ -946,21 +1007,40 @@ impl SimState {
         };
 
         if contract.is_complete() {
-            let payout = contract.payout_usd;
+            // The advance was cash on acceptance: pay out the remainder.
+            let total_payout = contract.payout_usd;
+            let payout = total_payout - contract.advance_paid_usd;
             let rep = contract.reputation_reward;
             let id = contract.template_id.clone();
+            let body_id = contract.body_id.clone();
             self.company.cash_usd += payout;
             self.company.completed_contracts.push(id.clone());
-            self.company.reputation = (self.company.reputation + rep).min(100.0);
+            self.company.reputation = (self.company.reputation + rep).min(300.0);
             self.push_event(SimEvent::ContractCompleted {
                 contract_id: id,
-                payout_usd: payout,
+                payout_usd: total_payout,
             });
             self.push_event(SimEvent::ReputationChanged {
                 delta: rep,
                 new_value: self.company.reputation,
             });
             self.company.active_contract = None;
+
+            // Program milestone: every contract of the body done once.
+            if self.company.game_mode == GameMode::Campaign
+                && let Some(program) = self.content.program_for_body(&body_id).cloned()
+                && !self.company.completed_programs.contains(&program.id)
+                && self
+                    .company
+                    .program_contracts_complete(&self.content, &body_id)
+            {
+                self.company.completed_programs.push(program.id.clone());
+                self.company.cash_usd += program.completion_grant_usd;
+                self.push_event(SimEvent::ProgramCompleted {
+                    program_id: program.id,
+                    grant_usd: program.completion_grant_usd,
+                });
+            }
             if self.company.game_mode == GameMode::Campaign
                 && self.company.outcome.is_none()
                 && self.company.all_contracts_completed(&self.content)
@@ -973,7 +1053,13 @@ impl SimState {
 
         if self.clock.sim_seconds > contract.deadline_sim_seconds {
             let id = contract.template_id.clone();
-            let penalty = self.company.failure_rep_penalty();
+            // Clawback: the advance goes back with an extra reputation hit.
+            let advance = contract.advance_paid_usd;
+            let mut penalty = self.company.failure_rep_penalty();
+            if advance > 0.0 {
+                self.company.cash_usd -= advance;
+                penalty += 5.0;
+            }
             self.company.reputation = (self.company.reputation - penalty).max(0.0);
             self.push_event(SimEvent::ContractFailed { contract_id: id });
             self.push_event(SimEvent::ReputationChanged {
@@ -1318,6 +1404,26 @@ impl SimState {
             outcome: self.company.outcome,
             ops_cost_usd_per_day: self.current_ops_cost_usd_per_day(),
             transfers_unlocked: self.transfers_unlocked(),
+            programs: self
+                .content
+                .programs
+                .iter()
+                .map(|p| ProgramSnapshot {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    body_id: p.body_id.clone(),
+                    buyin_usd: p.buyin_usd,
+                    reputation_required: p.reputation_required,
+                    requires_keystone: p.requires_keystone.clone(),
+                    keystone_done: p
+                        .requires_keystone
+                        .as_ref()
+                        .is_none_or(|k| self.company.completed_contracts.contains(k)),
+                    unlocked: self.company.unlocked_programs.contains(&p.id),
+                    completed: self.company.completed_programs.contains(&p.id),
+                    completion_grant_usd: p.completion_grant_usd,
+                })
+                .collect(),
         }
     }
 

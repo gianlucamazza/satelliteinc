@@ -329,7 +329,8 @@
       "reputation_required": 70,
       "reputation_reward": 15,
       "max_altitude_km": 150,
-      "min_inclination_deg": 80
+      "min_inclination_deg": 80,
+      "advance_fraction": 0.2
     },
     {
       "id": "mars_recon",
@@ -341,7 +342,8 @@
       "payout_usd": 950000,
       "reputation_required": 120,
       "reputation_reward": 20,
-      "max_altitude_km": 1000
+      "max_altitude_km": 1000,
+      "advance_fraction": 0.3
     },
     {
       "id": "farside_survey",
@@ -353,7 +355,8 @@
       "payout_usd": 520000,
       "reputation_required": 75,
       "reputation_reward": 12,
-      "max_altitude_km": 120
+      "max_altitude_km": 120,
+      "advance_fraction": 0.2
     },
     {
       "id": "mascon_gravimetry",
@@ -365,7 +368,8 @@
       "payout_usd": 580000,
       "reputation_required": 80,
       "reputation_reward": 12,
-      "max_altitude_km": 60
+      "max_altitude_km": 60,
+      "advance_fraction": 0.2
     },
     {
       "id": "polar_ice_hunt",
@@ -378,7 +382,8 @@
       "reputation_required": 85,
       "reputation_reward": 15,
       "max_altitude_km": 100,
-      "min_inclination_deg": 85
+      "min_inclination_deg": 85,
+      "advance_fraction": 0.2
     },
     {
       "id": "lunar_gateway_recon",
@@ -391,7 +396,114 @@
       "reputation_required": 90,
       "reputation_reward": 25,
       "min_altitude_km": 100,
-      "max_altitude_km": 500
+      "max_altitude_km": 500,
+      "advance_fraction": 0.25
+    },
+    {
+      "id": "dust_storm_watch",
+      "name": "Dust Storm Watch",
+      "body_id": "mars",
+      "description": "Persist through storm season: 30 days on station and 800 MB down the thin pipe.",
+      "downlink_mb": 800,
+      "deadline_days": 60,
+      "payout_usd": 1200000,
+      "advance_fraction": 0.3,
+      "reputation_required": 130,
+      "reputation_reward": 20,
+      "min_on_station_days": 30
+    },
+    {
+      "id": "mars_polar_caps",
+      "name": "Polar Cap Cycle",
+      "body_id": "mars",
+      "description": "CO2 cap monitoring from a polar orbit: 1 GB in 60 days.",
+      "downlink_mb": 1024,
+      "deadline_days": 60,
+      "payout_usd": 1350000,
+      "advance_fraction": 0.3,
+      "reputation_required": 140,
+      "reputation_reward": 22,
+      "min_inclination_deg": 80
+    },
+    {
+      "id": "areo_relay",
+      "name": "Areostationary Relay Trial",
+      "body_id": "mars",
+      "description": "Park above 17,000 km and relay 1.5 GB for the surface missions to come.",
+      "downlink_mb": 1536,
+      "deadline_days": 75,
+      "payout_usd": 1600000,
+      "advance_fraction": 0.3,
+      "reputation_required": 150,
+      "reputation_reward": 25,
+      "min_altitude_km": 17000
+    },
+    {
+      "id": "mars_sample_cache",
+      "name": "Sample Cache Survey",
+      "body_id": "mars",
+      "description": "45 days of low-orbit mapping of the cache sites: 2 GB. Unlocks the Venus Program.",
+      "downlink_mb": 2048,
+      "deadline_days": 90,
+      "payout_usd": 2200000,
+      "advance_fraction": 0.35,
+      "reputation_required": 160,
+      "reputation_reward": 30,
+      "max_altitude_km": 400,
+      "min_on_station_days": 45
+    },
+    {
+      "id": "venus_radar_map",
+      "name": "Magellan II Radar Map",
+      "body_id": "venus",
+      "description": "Pierce the clouds with radar: 1.2 GB, inclination >= 60 deg.",
+      "downlink_mb": 1229,
+      "deadline_days": 40,
+      "payout_usd": 1100000,
+      "advance_fraction": 0.3,
+      "reputation_required": 155,
+      "reputation_reward": 18,
+      "min_inclination_deg": 60
+    },
+    {
+      "id": "cloud_chemistry",
+      "name": "Cloud Deck Chemistry",
+      "body_id": "venus",
+      "description": "Skim the cloud tops between 300 and 600 km: 900 MB.",
+      "downlink_mb": 900,
+      "deadline_days": 35,
+      "payout_usd": 1000000,
+      "advance_fraction": 0.3,
+      "reputation_required": 160,
+      "reputation_reward": 18,
+      "min_altitude_km": 300,
+      "max_altitude_km": 600
+    },
+    {
+      "id": "thermal_survey",
+      "name": "Thermal Endurance Survey",
+      "body_id": "venus",
+      "description": "25 days in the oven while thermal anomalies rage: 1 GB.",
+      "downlink_mb": 1024,
+      "deadline_days": 45,
+      "payout_usd": 1250000,
+      "advance_fraction": 0.3,
+      "reputation_required": 165,
+      "reputation_reward": 20,
+      "min_on_station_days": 25
+    },
+    {
+      "id": "venus_pathfinder",
+      "name": "Pathfinder Atlas",
+      "body_id": "venus",
+      "description": "2 GB delivered through all three DSN complexes. Opens the road to Jupiter.",
+      "downlink_mb": 2048,
+      "deadline_days": 60,
+      "payout_usd": 1900000,
+      "advance_fraction": 0.3,
+      "reputation_required": 175,
+      "reputation_reward": 28,
+      "min_distinct_stations": 3
     }
   ],
   "tech_tree": [
@@ -502,6 +614,26 @@
       ],
       "ops_cost_multiplier": 0.85,
       "description": "Fewer people on console: -15% daily operating costs, everywhere."
+    },
+    {
+      "id": "dsn_priority",
+      "name": "DSN Priority Slots",
+      "cost_usd": 180000,
+      "requires": [
+        "high_gain_antenna"
+      ],
+      "deep_space_comms_multiplier": 1.3,
+      "description": "Bought scheduling priority at the Deep Space Network (+30%, stacks)."
+    },
+    {
+      "id": "radiation_hardening",
+      "name": "Radiation-Hardened Electronics",
+      "cost_usd": 200000,
+      "requires": [
+        "redundancy_mk2"
+      ],
+      "anomaly_mtbf_multiplier": 1.4,
+      "description": "Required beyond the asteroid belt. Anomalies rarer (stacks)."
     }
   ],
   "tle_catalog": [
@@ -602,7 +734,76 @@
         "comms_mk2",
         "smallsat_bus",
         "deep_space_ops"
+      ],
+      "starting_programs": [
+        "moon_program"
       ]
+    },
+    {
+      "id": "mars_window",
+      "name": "Tutorial \u2014 The Long Haul",
+      "description": "Mars Program bought, Ares Recon pre-accepted, explorer staged in LEO. Warp to the window, buy the injection, and learn why hibernation exists.",
+      "game_mode": "campaign",
+      "starting_cash": 2200000,
+      "starting_reputation": 125,
+      "bus_id": "explorer",
+      "body_id": "earth",
+      "contract_id": "mars_recon",
+      "starting_tech": [
+        "comms_mk2",
+        "smallsat_bus",
+        "deep_space_ops",
+        "comms_mk3",
+        "high_gain_antenna"
+      ],
+      "altitude_km": 300,
+      "inclination_deg": 28,
+      "starting_programs": [
+        "moon_program",
+        "mars_program"
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "earth_program",
+      "name": "Earth Program",
+      "body_id": "earth",
+      "buyin_usd": 0,
+      "reputation_required": 0,
+      "keystone_contract_id": "science_multi",
+      "completion_grant_usd": 150000,
+      "unlocked_by_default": true
+    },
+    {
+      "id": "moon_program",
+      "name": "Moon Program",
+      "body_id": "moon",
+      "buyin_usd": 250000,
+      "reputation_required": 60,
+      "requires_keystone": "science_multi",
+      "keystone_contract_id": "lunar_gateway_recon",
+      "completion_grant_usd": 300000
+    },
+    {
+      "id": "mars_program",
+      "name": "Mars Program",
+      "body_id": "mars",
+      "buyin_usd": 600000,
+      "reputation_required": 110,
+      "requires_keystone": "lunar_gateway_recon",
+      "keystone_contract_id": "mars_sample_cache",
+      "completion_grant_usd": 500000
+    },
+    {
+      "id": "venus_program",
+      "name": "Venus Program",
+      "body_id": "venus",
+      "buyin_usd": 900000,
+      "reputation_required": 150,
+      "requires_keystone": "mars_sample_cache",
+      "keystone_contract_id": "venus_pathfinder",
+      "completion_grant_usd": 750000
     }
   ]
 }

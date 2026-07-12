@@ -36,6 +36,22 @@ pub struct Snapshot {
     pub ops_cost_usd_per_day: f64,
     /// Whether interplanetary transfers are available to the company.
     pub transfers_unlocked: bool,
+    /// Campaign Programs with their gate status.
+    pub programs: Vec<ProgramSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgramSnapshot {
+    pub id: String,
+    pub name: String,
+    pub body_id: String,
+    pub buyin_usd: f64,
+    pub reputation_required: f64,
+    pub requires_keystone: Option<String>,
+    pub keystone_done: bool,
+    pub unlocked: bool,
+    pub completed: bool,
+    pub completion_grant_usd: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

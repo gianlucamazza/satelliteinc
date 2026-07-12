@@ -72,6 +72,7 @@ export interface PanelCallbacks {
     captureInclinationDeg: number,
   ) => void;
   onBeginTransfer: () => void;
+  onUnlockProgram: (programId: string) => void;
   onWarpTo: (targetSimSeconds: number) => void;
   onRestartCampaign: () => void;
   onShowHelp: () => void;
@@ -761,6 +762,25 @@ export class HudPanel {
 
   private renderCompanyTab(s: Snapshot): string[] {
     const parts: string[] = [];
+    if (s.programs.length > 0 && s.game_mode === "campaign") {
+      const rows = s.programs
+        .map((p) => {
+          const status = p.completed
+            ? `<strong class="pass-active">COMPLETE</strong>`
+            : p.unlocked
+              ? `<strong>ACTIVE</strong>`
+              : `<button class="btn-unlock-program" data-program="${esc(p.id)}"
+                  ${s.reputation >= p.reputation_required && p.keystone_done && s.cash_usd >= p.buyin_usd ? "" : "disabled"}
+                  title="${p.keystone_done ? (s.reputation >= p.reputation_required ? (s.cash_usd >= p.buyin_usd ? "Buy into the program" : "Insufficient funds") : `Requires reputation ${p.reputation_required}`) : `Complete ${p.requires_keystone ?? ""} first`}">
+                  Unlock — $${p.buyin_usd.toLocaleString()}
+                </button>`;
+          return `<div class="stat"><label>${esc(p.name)}</label>${status}<span class="stat-sub">rep ${p.reputation_required}${p.completion_grant_usd > 0 ? ` · grant $${(p.completion_grant_usd / 1000).toFixed(0)}k` : ""}</span></div>`;
+        })
+        .join("");
+      parts.push(
+        `<div class="field"><label>Programs</label>${rows}<p class="hint">Each program opens a body's contracts; its keystone unlocks the next gate.</p></div>`,
+      );
+    }
     parts.push(`
       <div class="field"><label>Game mode</label>
         <select id="game-mode" title="Campaign gates contracts by reputation; Sandbox is relaxed">
@@ -822,6 +842,9 @@ export class HudPanel {
       craft?.bus_id ?? "",
       s.active_contract?.template_id ?? "none",
       s.transfers_unlocked,
+      s.programs
+        .map((p) => `${p.id}:${p.unlocked}:${p.completed}:${p.keystone_done}`)
+        .join(","),
       craft?.transfer_planner?.target_body_id ?? "",
       craft?.transfer_planner?.window_open ?? "",
       craft?.transfer_planner
@@ -1001,6 +1024,13 @@ export class HudPanel {
       }
       if (target.id === "btn-hohmann-2") {
         this.callbacks.onCompleteHohmann();
+        return;
+      }
+      if (target.classList.contains("btn-unlock-program")) {
+        const programId = target.dataset.program;
+        if (programId) {
+          this.callbacks.onUnlockProgram(programId);
+        }
         return;
       }
       if (target.id === "btn-begin-transfer") {

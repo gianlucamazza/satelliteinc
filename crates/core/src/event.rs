@@ -80,6 +80,13 @@ pub enum SimEvent {
     WarpCompleted {
         seconds: f64,
     },
+    ProgramUnlocked {
+        program_id: String,
+    },
+    ProgramCompleted {
+        program_id: String,
+        grant_usd: f64,
+    },
     GameWon,
     GameOver {
         reason: GameOutcome,

@@ -2,8 +2,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{ContractTemplate, TechNode};
 
-/// Payout fraction for repeating an already-completed campaign contract.
+/// Payout fraction for repeating an already-completed campaign contract,
+/// decaying with each completion so farming can't bankroll deep space.
 pub const REPEAT_PAYOUT_FRACTION: f64 = 0.6;
+
+/// 1st repeat 60%, 2nd 45%, 3rd+ 35%.
+#[must_use]
+pub fn repeat_payout_fraction(completions: usize) -> f64 {
+    match completions {
+        0 => 1.0,
+        1 => REPEAT_PAYOUT_FRACTION,
+        2 => 0.45,
+        _ => 0.35,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -39,14 +51,16 @@ impl ContractOffer {
         reputation: f64,
         completed: &[String],
         mode: GameMode,
+        program_ok: bool,
     ) -> Self {
         let rep_ok = match mode {
             GameMode::Sandbox => true,
             GameMode::Campaign => reputation >= template.reputation_required,
         };
-        let repeat = mode == GameMode::Campaign && completed.contains(&template.id);
+        let completions = completed.iter().filter(|c| *c == &template.id).count();
+        let repeat = mode == GameMode::Campaign && completions > 0;
         let payout_usd = if repeat {
-            template.payout_usd * REPEAT_PAYOUT_FRACTION
+            template.payout_usd * repeat_payout_fraction(completions)
         } else {
             template.payout_usd
         };
@@ -63,7 +77,7 @@ impl ContractOffer {
             max_altitude_km: template.max_altitude_km,
             min_inclination_deg: template.min_inclination_deg,
             body_id: template.body_id.clone(),
-            available: rep_ok,
+            available: rep_ok && program_ok,
             repeat,
         }
     }

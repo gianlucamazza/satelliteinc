@@ -274,6 +274,12 @@ async function main(): Promise<void> {
         "Transfer target failed",
       );
     },
+    onUnlockProgram: (programId) => {
+      if (runAction({ type: "unlock_program", program_id: programId }, "Program unlock failed")) {
+        panel.showToast("Program unlocked — new contracts in the marketplace", "success");
+        panel.markTabAttention("mission");
+      }
+    },
     onBeginTransfer: () => {
       if (runAction({ type: "begin_transfer" }, "Transfer failed")) {
         panel.showToast("Injection burn complete — cruise started", "success");
@@ -500,6 +506,10 @@ async function main(): Promise<void> {
         return `Capture burn executed — ${ev.delta_v_km_s.toFixed(2)} km/s`;
       case "warp_completed":
         return `Warped +${(ev.seconds / 86_400).toFixed(1)} days`;
+      case "program_unlocked":
+        return `Program unlocked: ${ev.program_id.replace(/_/g, " ")}`;
+      case "program_completed":
+        return `PROGRAM COMPLETE: ${ev.program_id.replace(/_/g, " ")} — +$${ev.grant_usd.toLocaleString()} grant`;
       default:
         return JSON.stringify(ev);
     }
@@ -554,6 +564,10 @@ async function main(): Promise<void> {
           panel.showToast(msg, "success");
           views.setActive("body");
           panel.markTabAttention("mission");
+        }
+        if (ev.type === "program_completed") {
+          panel.showToast(msg, "success");
+          panel.markTabAttention("company");
         }
         if (ev.type === "game_won") {
           panel.showToast(msg, "success");

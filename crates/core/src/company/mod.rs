@@ -33,6 +33,15 @@ pub struct ActiveContract {
     /// Body whose orbit fulfills this contract.
     #[serde(default = "crate::content::default_body_id")]
     pub body_id: String,
+    /// Cash advanced on acceptance; clawed back on failure.
+    #[serde(default)]
+    pub advance_paid_usd: f64,
+    /// Cumulative days in a compliant orbit required before completion.
+    #[serde(default)]
+    pub min_on_station_days: f64,
+    /// Seconds accrued so far in a compliant orbit.
+    #[serde(default)]
+    pub on_station_seconds: f64,
     #[serde(default)]
     pub min_altitude_km: Option<f64>,
     #[serde(default)]
@@ -46,10 +55,13 @@ impl ActiveContract {
     pub fn from_template(
         template: &ContractTemplate,
         accepted_at_sim_seconds: f64,
-        is_repeat: bool,
+        completions: usize,
     ) -> Self {
-        let (payout_usd, reputation_reward) = if is_repeat {
-            (template.payout_usd * REPEAT_PAYOUT_FRACTION, 0.0)
+        let (payout_usd, reputation_reward) = if completions > 0 {
+            (
+                template.payout_usd * rd::repeat_payout_fraction(completions),
+                0.0,
+            )
         } else {
             (template.payout_usd, template.reputation_reward)
         };
@@ -65,6 +77,9 @@ impl ActiveContract {
             min_distinct_stations: template.min_distinct_stations,
             stations_used: Vec::new(),
             body_id: template.body_id.clone(),
+            advance_paid_usd: 0.0,
+            min_on_station_days: template.min_on_station_days,
+            on_station_seconds: 0.0,
             min_altitude_km: template.min_altitude_km,
             max_altitude_km: template.max_altitude_km,
             min_inclination_deg: template.min_inclination_deg,
@@ -111,6 +126,18 @@ impl ActiveContract {
         self.downlink_mb_done >= self.downlink_mb_required
             && (self.min_distinct_stations == 0
                 || self.stations_used.len() >= self.min_distinct_stations as usize)
+            && self.on_station_seconds
+                >= self.min_on_station_days * crate::constants::SECONDS_PER_DAY
+    }
+
+    /// 0..1 progress toward the on-station requirement (1 when none).
+    #[must_use]
+    pub fn on_station_progress(&self) -> f64 {
+        if self.min_on_station_days <= 0.0 {
+            return 1.0;
+        }
+        (self.on_station_seconds / (self.min_on_station_days * crate::constants::SECONDS_PER_DAY))
+            .clamp(0.0, 1.0)
     }
 }
 
@@ -139,6 +166,12 @@ pub struct CompanyState {
     /// Terminal campaign state; None while the game is live.
     #[serde(default)]
     pub outcome: Option<GameOutcome>,
+    /// Programs the company has bought into (Earth from the start).
+    #[serde(default)]
+    pub unlocked_programs: Vec<String>,
+    /// Programs whose whole contract set is complete (grant paid once).
+    #[serde(default)]
+    pub completed_programs: Vec<String>,
 }
 
 fn default_one() -> f64 {
@@ -165,6 +198,13 @@ impl CompanyState {
             capture_dv_multiplier: 1.0,
             unlocked_buses: Vec::new(),
             outcome: None,
+            unlocked_programs: content
+                .programs
+                .iter()
+                .filter(|p| p.unlocked_by_default)
+                .map(|p| p.id.clone())
+                .collect(),
+            completed_programs: Vec::new(),
         };
         company.apply_mode_buses(content);
         company
@@ -213,14 +253,41 @@ impl CompanyState {
             .contracts
             .iter()
             .map(|c| {
+                let program_ok = match content.program_for_body(&c.body_id) {
+                    Some(p) => {
+                        self.game_mode == GameMode::Sandbox
+                            || self.unlocked_programs.contains(&p.id)
+                    }
+                    None => true,
+                };
                 ContractOffer::from_template(
                     c,
                     self.reputation,
                     &self.completed_contracts,
                     self.game_mode,
+                    program_ok,
                 )
             })
             .collect()
+    }
+
+    /// Completions of a contract so far (repeat payouts decay with this).
+    #[must_use]
+    pub fn completions_of(&self, contract_id: &str) -> usize {
+        self.completed_contracts
+            .iter()
+            .filter(|c| c.as_str() == contract_id)
+            .count()
+    }
+
+    /// Whether every contract of the program's body is completed.
+    #[must_use]
+    pub fn program_contracts_complete(&self, content: &GameContent, body_id: &str) -> bool {
+        content
+            .contracts
+            .iter()
+            .filter(|c| c.body_id == body_id)
+            .all(|c| self.completed_contracts.contains(&c.id))
     }
 
     pub fn apply_tech(&mut self, tech: &TechNode) {
@@ -251,15 +318,13 @@ impl CompanyState {
 
     /// Campaign victory condition: every contract template completed at least once.
     #[must_use]
+    /// Grand campaign victory: every Program's contract set is complete.
     pub fn all_contracts_completed(&self, content: &GameContent) -> bool {
-        // Victory counts Earth contracts only until interplanetary Programs
-        // land (M12): off-world contracts are unreachable in campaign while
-        // transfers don't exist and must not make it unwinnable.
-        content
-            .contracts
-            .iter()
-            .filter(|c| c.body_id == "earth")
-            .all(|c| self.completed_contracts.contains(&c.id))
+        !content.programs.is_empty()
+            && content
+                .programs
+                .iter()
+                .all(|p| self.completed_programs.contains(&p.id))
     }
 
     #[must_use]

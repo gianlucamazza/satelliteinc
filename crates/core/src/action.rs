@@ -45,6 +45,10 @@ pub enum PlayerAction {
     },
     /// Buy the injection and depart (window must be open).
     BeginTransfer,
+    /// Buy into a body's Program (reputation + keystone gated).
+    UnlockProgram {
+        program_id: String,
+    },
     /// Advance sim time in one deterministic stride (chunked at ~2e6 s per
     /// call; re-issue until the target time is reached).
     WarpTo {

@@ -22,6 +22,9 @@ pub struct ScenarioTemplate {
     /// Tech already researched at scenario start (no cost).
     #[serde(default)]
     pub starting_tech: Vec<String>,
+    /// Programs already bought into at scenario start (no cost).
+    #[serde(default)]
+    pub starting_programs: Vec<String>,
     #[serde(default = "default_alt")]
     pub altitude_km: f64,
     #[serde(default = "default_inc")]
@@ -77,6 +80,11 @@ impl SimState {
                 company.apply_tech(tech);
             }
         }
+        for program_id in &scenario.starting_programs {
+            if !company.unlocked_programs.contains(program_id) {
+                company.unlocked_programs.push(program_id.clone());
+            }
+        }
         self.company = company;
 
         let mut craft = Spacecraft::new_from_bus(&bus, &bus.name);
@@ -91,7 +99,7 @@ impl SimState {
             self.company.active_contract = Some(ActiveContract::from_template(
                 &template,
                 self.clock.sim_seconds,
-                false,
+                0,
             ));
         }
 
