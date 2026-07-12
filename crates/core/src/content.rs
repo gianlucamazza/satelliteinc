@@ -36,6 +36,9 @@ pub struct ProgramDef {
     pub requires_keystone: Option<String>,
     /// This Program's own keystone (feeds the next gate).
     pub keystone_contract_id: String,
+    /// Tech that must be researched before buying in (e.g. rad-hardening).
+    #[serde(default)]
+    pub requires_tech: Option<String>,
     /// One-time payout when every contract of the body is completed.
     #[serde(default)]
     pub completion_grant_usd: f64,
@@ -83,6 +86,11 @@ pub struct CelestialBodyDef {
     /// Whether aerobraking can shave the capture burn here.
     #[serde(default)]
     pub has_atmosphere: bool,
+    /// Eccentricity of the post-capture orbit. Zero (circular) suits small
+    /// bodies; giants need a Juno-style high-e capture ellipse to keep the
+    /// insertion burn physical (~1.5 km/s instead of ~7).
+    #[serde(default)]
+    pub capture_eccentricity: f64,
 }
 
 fn default_injection_multiplier() -> f64 {
@@ -105,6 +113,13 @@ pub struct AnomalyFlavorDef {
     /// Extra solar multiplier while an anomaly is active and unsafed.
     #[serde(default = "default_one")]
     pub solar_penalty_while_active: f64,
+    /// Fraction of the buffer lost to a corruption event.
+    #[serde(default = "default_corruption_fraction")]
+    pub buffer_corruption_fraction: f64,
+}
+
+fn default_corruption_fraction() -> f64 {
+    0.25
 }
 
 /// Parent-relative Kepler elements; mean anomaly given at sim t = 0.
@@ -152,6 +167,7 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             anomaly_flavor: None,
             injection_cost_multiplier: 2.0,
             has_atmosphere: false,
+            capture_eccentricity: 0.0,
         },
         CelestialBodyDef {
             id: "earth".into(),
@@ -177,6 +193,7 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             anomaly_flavor: None,
             injection_cost_multiplier: 2.0,
             has_atmosphere: true,
+            capture_eccentricity: 0.0,
         },
     ]
 }
@@ -195,6 +212,10 @@ pub struct BusTemplate {
     pub launch_cost_usd: f64,
     pub propellant_kg: f64,
     pub isp_s: f64,
+    /// Radioisotope generator output: constant watts, indifferent to
+    /// sunlight, eclipse, and dust.
+    #[serde(default)]
+    pub rtg_power_w: f64,
     /// Recurring operating cost while this bus is on orbit.
     #[serde(default = "default_ops_cost")]
     pub ops_cost_usd_per_day: f64,
@@ -472,6 +493,12 @@ impl GameContent {
             }
         }
         for body in &self.bodies {
+            if !(0.0..0.95).contains(&body.capture_eccentricity) {
+                return Err(SimError::Content(format!(
+                    "body '{}' has a non-physical capture eccentricity",
+                    body.id
+                )));
+            }
             if body.dsn_bandwidth_factor <= 0.0 || body.anomaly_rate_multiplier <= 0.0 {
                 return Err(SimError::Content(format!(
                     "body '{}' has non-positive gameplay multipliers",
@@ -532,6 +559,14 @@ impl GameContent {
                 return Err(SimError::Content(format!(
                     "program '{}' has unknown keystone '{}'",
                     program.id, program.keystone_contract_id
+                )));
+            }
+            if let Some(tech_id) = &program.requires_tech
+                && self.tech(tech_id).is_none()
+            {
+                return Err(SimError::Content(format!(
+                    "program '{}' requires unknown tech '{tech_id}'",
+                    program.id
                 )));
             }
             if let Some(req) = &program.requires_keystone

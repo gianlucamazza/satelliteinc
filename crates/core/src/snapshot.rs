@@ -41,6 +41,7 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // gate-status DTO for the HUD
 pub struct ProgramSnapshot {
     pub id: String,
     pub name: String,
@@ -49,6 +50,8 @@ pub struct ProgramSnapshot {
     pub reputation_required: f64,
     pub requires_keystone: Option<String>,
     pub keystone_done: bool,
+    pub requires_tech: Option<String>,
+    pub tech_done: bool,
     pub unlocked: bool,
     pub completed: bool,
     pub completion_grant_usd: f64,

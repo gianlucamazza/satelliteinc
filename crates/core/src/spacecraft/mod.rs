@@ -169,6 +169,8 @@ impl Spacecraft {
         {
             solar *= anomaly_solar_penalty;
         }
+        // Plutonium doesn't care how far the sun is (or how dusty).
+        solar += self.bus.rtg_power_w;
         if let Some(a) = &self.active_anomaly
             && a.kind == AnomalyType::PowerGlitch
             && !a.is_expired(sim_seconds)

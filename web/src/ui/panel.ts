@@ -770,8 +770,8 @@ export class HudPanel {
             : p.unlocked
               ? `<strong>ACTIVE</strong>`
               : `<button class="btn-unlock-program" data-program="${esc(p.id)}"
-                  ${s.reputation >= p.reputation_required && p.keystone_done && s.cash_usd >= p.buyin_usd ? "" : "disabled"}
-                  title="${p.keystone_done ? (s.reputation >= p.reputation_required ? (s.cash_usd >= p.buyin_usd ? "Buy into the program" : "Insufficient funds") : `Requires reputation ${p.reputation_required}`) : `Complete ${p.requires_keystone ?? ""} first`}">
+                  ${s.reputation >= p.reputation_required && p.keystone_done && p.tech_done && s.cash_usd >= p.buyin_usd ? "" : "disabled"}
+                  title="${!p.keystone_done ? `Complete ${p.requires_keystone ?? ""} first` : !p.tech_done ? `Research ${p.requires_tech ?? ""} first` : s.reputation < p.reputation_required ? `Requires reputation ${p.reputation_required}` : s.cash_usd < p.buyin_usd ? "Insufficient funds" : "Buy into the program"}">
                   Unlock — $${p.buyin_usd.toLocaleString()}
                 </button>`;
           return `<div class="stat"><label>${esc(p.name)}</label>${status}<span class="stat-sub">rep ${p.reputation_required}${p.completion_grant_usd > 0 ? ` · grant $${(p.completion_grant_usd / 1000).toFixed(0)}k` : ""}</span></div>`;

@@ -126,15 +126,17 @@
         "mean_anomaly_epoch_deg": 95.18272591
       },
       "min_parking_altitude_km": 400000.0,
-      "max_parking_altitude_km": 2000000.0,
+      "max_parking_altitude_km": 6000000.0,
       "texture": "jupiter",
       "dsn_bandwidth_factor": 0.015,
       "anomaly_rate_multiplier": 2.0,
       "anomaly_flavor": {
-        "buffer_corruption_label": "Radiation upset"
+        "buffer_corruption_label": "Radiation upset",
+        "buffer_corruption_fraction": 0.2
       },
       "injection_cost_multiplier": 3.0,
-      "has_atmosphere": true
+      "has_atmosphere": true,
+      "capture_eccentricity": 0.85
     }
   ],
   "buses": [
@@ -196,6 +198,22 @@
       "propellant_kg": 140.0,
       "isp_s": 320.0,
       "ops_cost_usd_per_day": 20000,
+      "unlocked_by_default": false
+    },
+    {
+      "id": "pioneer",
+      "name": "Pioneer RTG",
+      "mass_kg": 350.0,
+      "solar_power_w": 60.0,
+      "rtg_power_w": 180.0,
+      "battery_wh": 2000.0,
+      "comms_mbps": 30.0,
+      "comms_power_w": 60.0,
+      "payload_power_w": 50.0,
+      "launch_cost_usd": 700000,
+      "propellant_kg": 260.0,
+      "isp_s": 335.0,
+      "ops_cost_usd_per_day": 28000,
       "unlocked_by_default": false
     }
   ],
@@ -504,6 +522,50 @@
       "reputation_required": 175,
       "reputation_reward": 28,
       "min_distinct_stations": 3
+    },
+    {
+      "id": "europa_flyby_science",
+      "name": "Europa Approach Science",
+      "body_id": "jupiter",
+      "description": "First data from the Jovian system: 600 MB through a 0.6 Mbps pipe.",
+      "downlink_mb": 600,
+      "deadline_days": 60,
+      "payout_usd": 2600000,
+      "advance_fraction": 0.4,
+      "reputation_required": 195,
+      "reputation_reward": 25,
+      "min_altitude_km": 1500000,
+      "max_altitude_km": 5500000
+    },
+    {
+      "id": "radiation_belt_probe",
+      "name": "Radiation Belt Probe",
+      "body_id": "jupiter",
+      "description": "30 days inside the belts. Expect upsets \u2014 each one wipes a fifth of the buffer.",
+      "downlink_mb": 500,
+      "deadline_days": 60,
+      "payout_usd": 2800000,
+      "advance_fraction": 0.4,
+      "reputation_required": 200,
+      "reputation_reward": 25,
+      "min_altitude_km": 1500000,
+      "max_altitude_km": 5500000,
+      "min_on_station_days": 30
+    },
+    {
+      "id": "europa_ocean_survey",
+      "name": "Europa Ocean Survey",
+      "body_id": "jupiter",
+      "description": "1.5 GB of ice-penetrating radar. Complete this and Satellite Inc owns the solar system.",
+      "downlink_mb": 1536,
+      "deadline_days": 120,
+      "payout_usd": 4500000,
+      "advance_fraction": 0.4,
+      "reputation_required": 210,
+      "reputation_reward": 40,
+      "min_altitude_km": 1500000,
+      "max_altitude_km": 5500000,
+      "min_on_station_days": 45
     }
   ],
   "tech_tree": [
@@ -634,6 +696,16 @@
       ],
       "anomaly_mtbf_multiplier": 1.4,
       "description": "Required beyond the asteroid belt. Anomalies rarer (stacks)."
+    },
+    {
+      "id": "rtg_power",
+      "name": "RTG Power Systems",
+      "cost_usd": 250000,
+      "requires": [
+        "radiation_hardening"
+      ],
+      "unlocks_bus": "pioneer",
+      "description": "Plutonium doesn't care how far the Sun is. Unlocks the Pioneer RTG bus."
     }
   ],
   "tle_catalog": [
@@ -804,6 +876,17 @@
       "requires_keystone": "mars_sample_cache",
       "keystone_contract_id": "venus_pathfinder",
       "completion_grant_usd": 750000
+    },
+    {
+      "id": "jupiter_program",
+      "name": "Jupiter Program",
+      "body_id": "jupiter",
+      "buyin_usd": 1500000,
+      "reputation_required": 190,
+      "requires_keystone": "venus_pathfinder",
+      "requires_tech": "radiation_hardening",
+      "keystone_contract_id": "europa_ocean_survey",
+      "completion_grant_usd": 0
     }
   ]
 }

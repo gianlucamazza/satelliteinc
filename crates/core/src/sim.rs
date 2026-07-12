@@ -278,12 +278,20 @@ impl SimState {
             .get(&transfer.target_body_id)
             .expect("transfer target validated at departure");
         craft.body_id.clone_from(&target.id);
-        craft.elements = Some(circular_orbit(
+        let mut capture_elements = circular_orbit(
             target.radius_km,
             transfer.capture_altitude_km,
             transfer.capture_inclination_deg,
             transfer.arrival_sim_seconds,
-        ));
+        );
+        // Giants capture into a high-e ellipse (periapsis at the chosen
+        // altitude) — the burn priced by the planner assumed exactly this.
+        if target.capture_eccentricity > 0.0 {
+            let r_p = target.radius_km + transfer.capture_altitude_km;
+            capture_elements.eccentricity = target.capture_eccentricity;
+            capture_elements.semi_major_axis_km = r_p / (1.0 - target.capture_eccentricity);
+        }
+        craft.elements = Some(capture_elements);
         craft.phase = CraftPhase::OnOrbit;
         craft.total_delta_v_used_km_s += transfer.capture_dv_km_s;
         craft.transfer_target = None;
@@ -647,6 +655,13 @@ impl SimState {
                         "requires completing '{keystone}' first"
                     )));
                 }
+                if let Some(tech_id) = &program.requires_tech
+                    && !self.company.unlocked_tech.contains(tech_id)
+                {
+                    return Err(SimError::InvalidAction(format!(
+                        "requires researching '{tech_id}' first"
+                    )));
+                }
                 if !self.company.can_afford(program.buyin_usd) {
                     self.push_event(SimEvent::InsufficientFunds {
                         required_usd: program.buyin_usd,
@@ -863,7 +878,10 @@ impl SimState {
                 }
                 let label = anomaly.label().to_string();
                 if kind == AnomalyType::BufferCorruption {
-                    craft.buffer_mb *= 0.75;
+                    let fraction = flavor
+                        .as_ref()
+                        .map_or(0.25, |f| f.buffer_corruption_fraction);
+                    craft.buffer_mb *= 1.0 - fraction;
                 }
                 craft.active_anomaly = Some(anomaly);
                 craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
@@ -1419,6 +1437,11 @@ impl SimState {
                         .requires_keystone
                         .as_ref()
                         .is_none_or(|k| self.company.completed_contracts.contains(k)),
+                    requires_tech: p.requires_tech.clone(),
+                    tech_done: p
+                        .requires_tech
+                        .as_ref()
+                        .is_none_or(|t| self.company.unlocked_tech.contains(t)),
                     unlocked: self.company.unlocked_programs.contains(&p.id),
                     completed: self.company.completed_programs.contains(&p.id),
                     completion_grant_usd: p.completion_grant_usd,

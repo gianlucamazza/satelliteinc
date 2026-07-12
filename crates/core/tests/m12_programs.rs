@@ -171,7 +171,12 @@ fn grand_victory_needs_every_program() {
     for (id, _) in all.iter().filter(|(id, _)| id != "venus_pathfinder") {
         sim.company.completed_contracts.push(id.clone());
     }
-    for program in ["earth_program", "moon_program", "mars_program"] {
+    for program in [
+        "earth_program",
+        "moon_program",
+        "mars_program",
+        "jupiter_program",
+    ] {
         sim.company.completed_programs.push(program.into());
     }
     sim.company.unlocked_programs.push("venus_program".into());

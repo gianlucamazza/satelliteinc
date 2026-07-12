@@ -14,7 +14,7 @@ fn sandbox_unlocks_all_buses_and_contracts() {
     .unwrap();
 
     assert_eq!(sim.company.game_mode, GameMode::Sandbox);
-    assert_eq!(sim.company.unlocked_buses.len(), 4);
+    assert_eq!(sim.company.unlocked_buses.len(), 5);
     let market = sim.company.marketplace(&sim.content);
     assert!(market.iter().all(|o| o.available));
 }

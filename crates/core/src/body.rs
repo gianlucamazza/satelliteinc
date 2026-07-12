@@ -36,6 +36,7 @@ pub struct CelestialBody {
     pub anomaly_flavor: Option<AnomalyFlavorDef>,
     pub injection_cost_multiplier: f64,
     pub has_atmosphere: bool,
+    pub capture_eccentricity: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +108,7 @@ impl BodyRegistry {
                 anomaly_flavor: def.anomaly_flavor.clone(),
                 injection_cost_multiplier: def.injection_cost_multiplier,
                 has_atmosphere: def.has_atmosphere,
+                capture_eccentricity: def.capture_eccentricity,
             });
         }
 

@@ -219,12 +219,16 @@ pub fn plan_transfer(
         (v_inf * v_inf + 2.0 * mu_o / r_p).sqrt() - (mu_o / r_p).sqrt()
     };
 
-    // Hyperbolic capture into the target parking orbit.
+    // Hyperbolic capture at periapsis into the body's capture orbit —
+    // circular for small bodies, a Juno-style high-e ellipse for giants
+    // (which is what keeps insertion at Jupiter near ~1.5 km/s).
     let v_inf_arr = (v2_body - v2_transfer).abs();
     let r_cap = target_body.radius_km + capture_altitude_km;
     let mu_t = target_body.mu_km3_s2;
-    let capture_dv_km_s =
-        (v_inf_arr * v_inf_arr + 2.0 * mu_t / r_cap).sqrt() - (mu_t / r_cap).sqrt();
+    let e_cap = target_body.capture_eccentricity;
+    let a_cap = r_cap / (1.0 - e_cap);
+    let v_capture_orbit = (mu_t * (2.0 / r_cap - 1.0 / a_cap)).sqrt();
+    let capture_dv_km_s = (v_inf_arr * v_inf_arr + 2.0 * mu_t / r_cap).sqrt() - v_capture_orbit;
 
     // Transfer ellipse: periapsis (or apoapsis when descending) at the
     // departure longitude in the frame body's plane.

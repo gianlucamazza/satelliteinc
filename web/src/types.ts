@@ -223,6 +223,8 @@ export interface ProgramSnapshot {
   reputation_required: number;
   requires_keystone: string | null;
   keystone_done: boolean;
+  requires_tech: string | null;
+  tech_done: boolean;
   unlocked: boolean;
   completed: boolean;
   completion_grant_usd: number;
@@ -240,6 +242,8 @@ export interface BusTemplate {
   launch_cost_usd: number;
   propellant_kg: number;
   isp_s: number;
+  /** Constant RTG watts, indifferent to sunlight (0 = solar only). */
+  rtg_power_w?: number;
   ops_cost_usd_per_day: number;
   unlocked_by_default?: boolean;
 }
