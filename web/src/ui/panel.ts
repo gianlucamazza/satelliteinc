@@ -149,8 +149,8 @@ export class HudPanel {
       this.renderTabs();
     }
     const bodyName =
-      snapshot.spacecraft && snapshot.spacecraft.body_id !== "earth"
-        ? snapshot.bodies.find((b) => b.id === snapshot.spacecraft?.body_id)
+      snapshot.spacecraft[0] && snapshot.spacecraft[0].body_id !== "earth"
+        ? snapshot.bodies.find((b) => b.id === snapshot.spacecraft[0]?.body_id)
             ?.name
         : null;
     this.phaseEl.textContent = `${snapshot.phase.replace(/_/g, " ")} · ${snapshot.game_mode}${bodyName ? ` · ${bodyName}` : ""}`;
@@ -192,7 +192,7 @@ export class HudPanel {
   }
 
   private maybeToastContract(s: Snapshot): void {
-    const c = s.active_contract;
+    const c = s.active_contracts[0] ?? null;
     if (!c) return;
     const days = contractDaysLeft(c, s.sim_seconds);
     // Key the guard on the contract so each new contract can warn again.
@@ -293,8 +293,8 @@ export class HudPanel {
   }
 
   private computeStatusFingerprint(s: Snapshot): string {
-    const c = s.spacecraft;
-    const contract = s.active_contract;
+    const c = s.spacecraft[0] ?? null;
+    const contract = s.active_contracts[0] ?? null;
     return [
       s.cash_usd.toFixed(0),
       s.reputation.toFixed(0),
@@ -309,7 +309,7 @@ export class HudPanel {
       c?.anomaly_label ?? "",
       c?.command_queue.length ?? "",
       contract?.downlink_mb_done.toFixed(0) ?? "",
-      s.active_contract_orbit_ok ?? "",
+      (s.active_contracts[0]?.orbit_ok ?? null) ?? "",
       s.outcome ?? "",
       s.ops_cost_usd_per_day.toFixed(0),
       c ? Math.round((c.power_wh / c.battery_wh_capacity) * 50) : "",
@@ -317,11 +317,11 @@ export class HudPanel {
       c?.propellant_kg.toFixed(2) ?? "",
       dataFlowStatus(s)?.text ?? "",
       Math.round(bankruptcyRunwayDays(s) ?? -1),
-      s.ground_stations
+      (c?.station_status ?? [])
         .map(
           (st) =>
             // Coarse ETA bucket so the "next pass" countdown refreshes.
-            `${st.id}:${st.in_pass}:${st.elevation_deg.toFixed(0)}:${Math.round((st.next_pass_in_seconds ?? -1) / 15)}`,
+            `${st.station_id}:${st.in_pass}:${st.elevation_deg.toFixed(0)}:${Math.round((st.next_pass_in_seconds ?? -1) / 15)}`,
         )
         .join(","),
     ].join("|");
@@ -332,28 +332,23 @@ export class HudPanel {
     if (fp === this.statusFingerprint) return;
     this.statusFingerprint = fp;
 
-    const craft = s.spacecraft;
-    const contract = s.active_contract;
+    const craft = s.spacecraft[0] ?? null;
+    const contract = s.active_contracts[0] ?? null;
     const nextPass = nextPassStation(s);
     const craftBodyId = craft?.body_id ?? "earth";
 
-    const stationRows = s.ground_stations
-      .filter(
-        (st) =>
-          st.body_id === craftBodyId ||
-          (st.dsn && craftBodyId !== "earth"),
-      )
+    const stationRows = (craft?.station_status ?? [])
       .map((st) => {
+        const info = s.ground_stations.find((g) => g.id === st.station_id);
+        const name = info?.name ?? st.station_id;
+        const isDsnLink = (info?.dsn ?? false) && info?.body_id !== craftBodyId;
         const passEta =
           st.in_pass || st.next_pass_in_seconds == null
             ? ""
             : `<span class="stat-sub">next ${formatDuration(st.next_pass_in_seconds)}</span>`;
-        const idle =
-          st.dsn && st.body_id !== craftBodyId
-            ? "NO LINK"
-            : `${st.elevation_deg.toFixed(0)}°`;
-        const active = st.dsn && st.body_id !== craftBodyId ? "LINK" : "PASS";
-        return `<div class="stat"><label>${esc(st.name)}</label><strong class="${st.in_pass ? "pass-active" : ""}">${st.in_pass ? active : idle}</strong><span class="stat-sub">${st.bandwidth_mbps.toFixed(1)} Mbps</span>${passEta}</div>`;
+        const idle = isDsnLink ? "NO LINK" : `${st.elevation_deg.toFixed(0)}°`;
+        const active = isDsnLink ? "LINK" : "PASS";
+        return `<div class="stat"><label>${esc(name)}</label><strong class="${st.in_pass ? "pass-active" : ""}">${st.in_pass ? active : idle}</strong><span class="stat-sub">${st.bandwidth_mbps.toFixed(1)} Mbps</span>${passEta}</div>`;
       })
       .join("");
 
@@ -365,7 +360,7 @@ export class HudPanel {
     const orbitReq = contract ? orbitRequirementText(contract) : "";
     const orbitSpecLine =
       contract && orbitReq
-        ? s.active_contract_orbit_ok === false
+        ? (s.active_contracts[0]?.orbit_ok ?? null) === false
           ? `<div class="orbit-spec bad">Orbit OUT OF SPEC — needs ${orbitReq}</div>`
           : `<div class="orbit-spec ok">Orbit OK (${orbitReq})</div>`
         : "";
@@ -485,7 +480,7 @@ export class HudPanel {
 
   private renderMissionTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft;
+    const craft = s.spacecraft[0] ?? null;
 
     const scenarios = this.content.scenarios ?? [];
     if (scenarios.length) {
@@ -530,7 +525,7 @@ export class HudPanel {
         `);
       }
 
-      if (!s.active_contract) {
+      if (!s.active_contracts.length) {
         parts.push(
           `<div class="field"><label>Contract marketplace</label></div>`,
         );
@@ -563,7 +558,7 @@ export class HudPanel {
           <p class="hint">Checklist: bus configured · contract accepted · funds available</p>
         `);
       }
-    } else if (!s.active_contract) {
+    } else if (!s.active_contracts.length) {
       parts.push(
         `<div class="success-banner">Contract complete! Choose your next mission.</div>`,
       );
@@ -599,7 +594,7 @@ export class HudPanel {
 
   private renderOpsTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft;
+    const craft = s.spacecraft[0] ?? null;
     if (craft?.phase !== "OnOrbit") {
       parts.push(`<p class="hint">Launch first to access ground ops.</p>`);
       return parts;
@@ -639,7 +634,7 @@ export class HudPanel {
 
   private renderTransferTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft;
+    const craft = s.spacecraft[0] ?? null;
 
     if (craft?.phase === "Transfer" && craft.transfer) {
       const t = craft.transfer;
@@ -729,7 +724,7 @@ export class HudPanel {
 
   private renderOrbitTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft;
+    const craft = s.spacecraft[0] ?? null;
     if (craft?.phase !== "OnOrbit") {
       parts.push(`<p class="hint">Launch first to access maneuvers.</p>`);
       return parts;
@@ -834,13 +829,13 @@ export class HudPanel {
   }
 
   private computeActionStructureKey(s: Snapshot): string {
-    const craft = s.spacecraft;
+    const craft = s.spacecraft[0] ?? null;
     return [
       s.phase,
       s.game_mode,
       craft?.phase ?? "",
       craft?.bus_id ?? "",
-      s.active_contract?.template_id ?? "none",
+      s.active_contracts[0]?.template_id ?? "none",
       s.transfers_unlocked,
       s.programs
         .map((p) => `${p.id}:${p.unlocked}:${p.completed}:${p.keystone_done}`)
@@ -874,7 +869,7 @@ export class HudPanel {
   }
 
   private updateActionDynamicState(s: Snapshot): void {
-    const craft = s.spacecraft;
+    const craft = s.spacecraft[0] ?? null;
 
     for (const btn of document.querySelectorAll<HTMLButtonElement>(
       ".accel-btn",
@@ -980,12 +975,12 @@ export class HudPanel {
         return;
       }
       if (target.id === "btn-decommission") {
-        const busId = s.spacecraft?.bus_id;
+        const busId = s.spacecraft[0]?.bus_id;
         if (busId) this.callbacks.onDecommission(this.salvageUsd(busId));
         return;
       }
       if (target.id === "btn-downlink") {
-        this.callbacks.onToggleDownlink(!s.spacecraft?.downlink_active);
+        this.callbacks.onToggleDownlink(!s.spacecraft[0]?.downlink_active);
         return;
       }
       if (
@@ -998,7 +993,7 @@ export class HudPanel {
         ) as HTMLSelectElement | null;
         const station =
           stationSel?.value ??
-          s.spacecraft?.downlink_station_id ??
+          s.spacecraft[0]?.downlink_station_id ??
           s.ground_stations[0]?.id;
         if (!station) return;
         const cmd =

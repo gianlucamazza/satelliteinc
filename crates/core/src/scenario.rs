@@ -65,7 +65,9 @@ impl SimState {
         };
 
         self.clock = crate::clock::SimClock::new();
-        self.pass_active.fill(false);
+        self.fleet.clear();
+        self.pass_active.clear();
+        self.next_craft_id = 0;
         self.event_queue.clear();
 
         let mut company = CompanyState::new(
@@ -87,20 +89,20 @@ impl SimState {
         }
         self.company = company;
 
-        let mut craft = Spacecraft::new_from_bus(&bus, &bus.name);
+        let name = format!("{}-1", bus.name);
+        let mut craft = Spacecraft::new_from_bus(&bus, &name, 0);
         craft.body_id.clone_from(&scenario.body_id);
         craft.target_altitude_km = scenario.altitude_km;
         craft.target_inclination_deg = scenario.inclination_deg;
-        self.spacecraft = Some(craft);
+        self.add_craft(craft);
 
         // Scenario-seeded contracts bypass marketplace availability gates
         // (reputation), unlike player-accepted ones.
         if let Some(template) = contract_template {
-            self.company.active_contract = Some(ActiveContract::from_template(
-                &template,
-                self.clock.sim_seconds,
-                0,
-            ));
+            let mut contract = ActiveContract::from_template(&template, self.clock.sim_seconds, 0);
+            // The scenario craft services its seeded contract.
+            contract.assigned_craft_id = Some(0);
+            self.company.active_contracts.push(contract);
         }
 
         Ok(())

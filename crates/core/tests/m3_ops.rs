@@ -15,25 +15,31 @@ fn multi_station_pass_and_command_queue() {
     })
     .unwrap();
     sim.apply_action(PlayerAction::SetOrbit {
+        craft_id: 0,
         altitude_km: 400.0,
         inclination_deg: 97.0,
     })
     .unwrap();
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "earth_imaging".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     sim.apply_action(PlayerAction::SelectDownlinkStation {
+        craft_id: 0,
         station_id: "svalbard".into(),
     })
     .unwrap();
     sim.apply_action(PlayerAction::QueueCommand {
+        craft_id: 0,
         command: CommandType::ClearAnomaly,
         station_id: "svalbard".into(),
     })
     .unwrap();
     sim.apply_action(PlayerAction::SetPayloadMode {
+        craft_id: 0,
         mode: PayloadMode::DownlinkPriority,
     })
     .unwrap();
@@ -70,7 +76,8 @@ fn anomaly_schedule_independent_of_frame_cadence() {
             bus_id: "cubesat".into(),
         })
         .unwrap();
-        sim.apply_action(PlayerAction::Launch).unwrap();
+        sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+            .unwrap();
         sim.apply_action(PlayerAction::SetTimeAccel {
             multiplier: 1_000.0,
         })
@@ -108,10 +115,11 @@ fn buffer_corruption_expires_and_does_not_block_future_anomalies() {
         bus_id: "cubesat".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
 
     let started_at = sim.clock.sim_seconds;
-    let craft = sim.spacecraft.as_mut().unwrap();
+    let craft = common::only_craft_mut(&mut sim);
     craft.buffer_mb = 100.0;
     craft.active_anomaly = Some(ActiveAnomaly::new(
         AnomalyType::BufferCorruption,
@@ -125,7 +133,7 @@ fn buffer_corruption_expires_and_does_not_block_future_anomalies() {
         sim.step(0.016);
     }
 
-    let craft = sim.spacecraft.as_ref().unwrap();
+    let craft = common::only_craft(&sim);
     assert!(
         craft.active_anomaly.is_none(),
         "buffer corruption must expire and clear"

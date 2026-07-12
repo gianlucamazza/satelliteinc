@@ -17,10 +17,11 @@ fn load_scenario_sets_mode_and_contract() {
     assert_eq!(sim.company.reputation, 20.0);
     assert_eq!(
         sim.company
-            .active_contract
+            .active_contracts
+            .first()
             .as_ref()
             .map(|c| c.template_id.as_str()),
         Some("comms_relay")
     );
-    assert_eq!(sim.spacecraft.as_ref().unwrap().bus_id, "microsat");
+    assert_eq!(common::only_craft(&sim).bus_id, "microsat");
 }

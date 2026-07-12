@@ -47,12 +47,17 @@ fn campaign_slice_is_bit_identical() {
             scenario_id: "campaign_start".into(),
         },
         PlayerAction::SetOrbit {
+            craft_id: 0,
             altitude_km: 500.0,
             inclination_deg: 60.0,
         },
-        PlayerAction::Launch,
-        PlayerAction::SetDownlink { active: true },
+        PlayerAction::Launch { craft_id: 0 },
+        PlayerAction::SetDownlink {
+            craft_id: 0,
+            active: true,
+        },
         PlayerAction::SelectDownlinkStation {
+            craft_id: 0,
             station_id: "chile".into(),
         },
         PlayerAction::SetTimeAccel { multiplier: 1000.0 },
@@ -64,7 +69,7 @@ fn campaign_slice_is_bit_identical() {
     }
 
     let snap = sim.snapshot();
-    let craft = snap.spacecraft.expect("craft on orbit");
+    let craft = snap.spacecraft.into_iter().next().expect("craft on orbit");
 
     check("sim_seconds", snap.sim_seconds, 0x40e7700000000000);
     check("cash_usd", snap.cash_usd, 0x4113f8d8e38dec80);
@@ -79,7 +84,9 @@ fn campaign_slice_is_bit_identical() {
     check("buffer_mb", craft.buffer_mb, 0x40a0000000000000);
     check(
         "contract_progress",
-        snap.active_contract.map_or(-1.0, |c| c.downlink_mb_done),
+        snap.active_contracts
+            .first()
+            .map_or(-1.0, |c| c.contract.downlink_mb_done),
         0x405c400000000000,
     );
 }

@@ -12,14 +12,15 @@ fn luna_sim() -> SimState {
         scenario_id: "sandbox_luna".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     sim
 }
 
 #[test]
 fn lunar_orbit_uses_lunar_gravity() {
     let mut sim = luna_sim();
-    let craft = sim.spacecraft.as_ref().unwrap();
+    let craft = common::only_craft(&sim);
     assert_eq!(craft.body_id, "moon");
     let elements = craft.elements.unwrap();
     // a = 1737.4 + 100 km; period from the Moon's mu, not Earth's.
@@ -35,13 +36,13 @@ fn lunar_orbit_uses_lunar_gravity() {
     // period the craft has moved ~90 degrees, not several revolutions.
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 1.0 })
         .unwrap();
-    let p0 = sim.snapshot().spacecraft.unwrap().position_eci_km;
+    let p0 = common::snap_craft(&sim).position_eci_km;
     #[allow(clippy::cast_sign_loss)] // period is positive by construction
     let quarter_ticks = (period / 4.0) as usize;
     for _ in 0..quarter_ticks {
         sim.step(1.0);
     }
-    let p1 = sim.snapshot().spacecraft.unwrap().position_eci_km;
+    let p1 = common::snap_craft(&sim).position_eci_km;
     let dot = p0[0] * p1[0] + p0[1] * p1[1] + p0[2] * p1[2];
     let n0 = (p0[0] * p0[0] + p0[1] * p0[1] + p0[2] * p0[2]).sqrt();
     let n1 = (p1[0] * p1[0] + p1[1] * p1[1] + p1[2] * p1[2]).sqrt();
@@ -64,12 +65,18 @@ fn dsn_link_toggles_over_a_lunar_orbit() {
     let mut saw_blackout = false;
     for _ in 0..300 {
         sim.step(0.4); // 40 sim-seconds per sample
+        let craft = common::snap_craft(&sim);
         let snap = sim.snapshot();
-        let dsn_up = snap
+        let dsn_ids: Vec<&str> = snap
             .ground_stations
             .iter()
             .filter(|s| s.dsn)
-            .any(|s| s.in_pass);
+            .map(|s| s.id.as_str())
+            .collect();
+        let dsn_up = craft
+            .station_status
+            .iter()
+            .any(|st| dsn_ids.contains(&st.station_id.as_str()) && st.in_pass);
         if dsn_up {
             saw_link = true;
         } else {
@@ -83,21 +90,21 @@ fn dsn_link_toggles_over_a_lunar_orbit() {
 #[test]
 fn dsn_bandwidth_scaled_by_body_factor() {
     let sim = luna_sim();
-    let snap = sim.snapshot();
-    let goldstone = snap
-        .ground_stations
+    let craft = common::snap_craft(&sim);
+    let goldstone = craft
+        .station_status
         .iter()
-        .find(|s| s.id == "goldstone")
+        .find(|s| s.station_id == "goldstone")
         .unwrap();
     // 40 Mbps dish at the Moon's 0.7 factor.
     assert!((goldstone.bandwidth_mbps - 28.0).abs() < 1e-9);
-    // Local Earth stations are irrelevant from the Moon and never in pass.
-    let svalbard = snap
-        .ground_stations
-        .iter()
-        .find(|s| s.id == "svalbard")
-        .unwrap();
-    assert!(!svalbard.in_pass);
+    // Local Earth dishes are unreachable from the Moon: not even listed.
+    assert!(
+        !craft
+            .station_status
+            .iter()
+            .any(|s| s.station_id == "svalbard")
+    );
 }
 
 #[test]
@@ -110,12 +117,18 @@ fn contract_data_from_wrong_body_is_rejected() {
     .unwrap();
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "moon_mapper".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
-    sim.apply_action(PlayerAction::SetDownlink { active: true })
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
         .unwrap();
+    sim.apply_action(PlayerAction::SetDownlink {
+        craft_id: 0,
+        active: true,
+    })
+    .unwrap();
     sim.apply_action(PlayerAction::SelectDownlinkStation {
+        craft_id: 0,
         station_id: "chile".into(),
     })
     .unwrap();
@@ -124,12 +137,12 @@ fn contract_data_from_wrong_body_is_rejected() {
     for _ in 0..3000 {
         sim.step(0.016);
     }
-    let contract = sim.company.active_contract.as_ref().unwrap();
+    let contract = common::only_contract(&sim);
     assert_eq!(
         contract.downlink_mb_done, 0.0,
         "moon contract must not accrue from earth orbit"
     );
-    assert_eq!(sim.snapshot().active_contract_orbit_ok, Some(false));
+    assert_eq!(sim.snapshot().active_contracts[0].orbit_ok, Some(false));
 }
 
 #[test]
@@ -139,7 +152,8 @@ fn mars_dust_storm_flavor_applies() {
         scenario_id: "sandbox_mars".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 1000.0 })
         .unwrap();
     // Mars rate 1.3 shortens the 4000 s bucket to ~3077 s; bucket 1 is a
@@ -147,11 +161,7 @@ fn mars_dust_storm_flavor_applies() {
     let mut dropout: Option<(String, f64)> = None;
     for _ in 0..500 {
         sim.step(0.016);
-        if let Some(a) = sim
-            .spacecraft
-            .as_ref()
-            .and_then(|c| c.active_anomaly.as_ref())
-        {
+        if let Some(a) = sim.fleet.first().and_then(|c| c.active_anomaly.as_ref()) {
             dropout = Some((a.label().to_string(), a.duration_seconds));
             break;
         }
@@ -169,8 +179,11 @@ fn moon_scenario_is_deterministic() {
             PlayerAction::LoadScenario {
                 scenario_id: "sandbox_luna".into(),
             },
-            PlayerAction::Launch,
-            PlayerAction::SetDownlink { active: true },
+            PlayerAction::Launch { craft_id: 0 },
+            PlayerAction::SetDownlink {
+                craft_id: 0,
+                active: true,
+            },
             PlayerAction::SetTimeAccel { multiplier: 1000.0 },
         ] {
             sim.apply_action(action).unwrap();
@@ -179,7 +192,7 @@ fn moon_scenario_is_deterministic() {
             sim.step(0.016);
         }
         let snap = sim.snapshot();
-        let craft = snap.spacecraft.unwrap();
+        let craft = snap.spacecraft.into_iter().next().unwrap();
         (
             snap.cash_usd.to_bits(),
             craft.position_eci_km[0].to_bits(),
@@ -193,6 +206,7 @@ fn moon_scenario_is_deterministic() {
 fn earth_stations_rejected_from_the_moon() {
     let mut sim = luna_sim();
     let err = sim.apply_action(PlayerAction::SelectDownlinkStation {
+        craft_id: 0,
         station_id: "svalbard".into(),
     });
     assert!(
@@ -201,6 +215,7 @@ fn earth_stations_rejected_from_the_moon() {
     );
     // DSN dish is fine.
     sim.apply_action(PlayerAction::SelectDownlinkStation {
+        craft_id: 0,
         station_id: "goldstone".into(),
     })
     .unwrap();

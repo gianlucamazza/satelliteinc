@@ -4,6 +4,9 @@ pub use maneuver::{HohmannPlanSnapshot, PendingHohmann};
 
 use serde::{Deserialize, Serialize};
 
+/// Stable fleet-wide spacecraft identifier (monotonic, never reused).
+pub type CraftId = u32;
+
 use crate::content::BusTemplate;
 use crate::ops::{ActiveAnomaly, AnomalyType, QueuedCommand};
 use crate::orbit::{KeplerElements, delta_v_capacity_km_s};
@@ -56,6 +59,8 @@ fn default_body_id() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spacecraft {
+    /// Stable id assigned at creation (v3 saves migrate to 0).
+    pub id: CraftId,
     pub name: String,
     pub bus_id: String,
     pub bus: BusTemplate,
@@ -90,8 +95,9 @@ pub struct Spacecraft {
 
 impl Spacecraft {
     #[must_use]
-    pub fn new_from_bus(bus: &BusTemplate, name: &str) -> Self {
+    pub fn new_from_bus(bus: &BusTemplate, name: &str, id: CraftId) -> Self {
         Self {
+            id,
             name: name.to_string(),
             bus_id: bus.id.clone(),
             bus: bus.clone(),

@@ -331,6 +331,12 @@ export class BodyView {
   }
 
   private syncStations(snapshot: Snapshot): void {
+    const craftStatus = new Map(
+      (snapshot.spacecraft[0]?.station_status ?? []).map((st) => [
+        st.station_id,
+        st,
+      ]),
+    );
     for (const station of snapshot.ground_stations) {
       // Only stations sitting on the rendered body get surface markers.
       if (station.body_id !== this.bodyId) continue;
@@ -363,11 +369,12 @@ export class BodyView {
         this.stationLabels.add(label);
         this.stationLabelObjs.set(station.id, label);
       }
+      const inPass = craftStatus.get(station.id)?.in_pass ?? false;
       (dot.material as THREE.MeshBasicMaterial).color.set(
-        station.in_pass ? 0x3dd68c : 0xff4466,
+        inPass ? 0x3dd68c : 0xff4466,
       );
       (label.element as HTMLDivElement).className =
-        `station-label${station.in_pass ? " pass" : ""}`;
+        `station-label${inPass ? " pass" : ""}`;
       dot.visible = shouldShowLabel(
         dot.getWorldPosition(this.worldPos),
         this.camera,
@@ -424,7 +431,7 @@ export class BodyView {
   }
 
   update(snapshot: Snapshot): void {
-    const focusBodyId = snapshot.spacecraft?.body_id ?? "earth";
+    const focusBodyId = snapshot.spacecraft[0]?.body_id ?? "earth";
     const focusBody = snapshot.bodies.find((b) => b.id === focusBodyId);
     if (focusBody && focusBody.id !== this.bodyId) {
       this.setBody(focusBody);
@@ -446,7 +453,7 @@ export class BodyView {
     this.syncStations(snapshot);
     this.syncReferenceSats(snapshot);
 
-    const craft = snapshot.spacecraft;
+    const craft = snapshot.spacecraft[0] ?? null;
     this.downlinkLine.visible = false;
 
     if (!craft || craft.phase === "Design") {

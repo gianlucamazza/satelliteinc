@@ -36,7 +36,8 @@ fn on_orbit_ops_cost_accrues_per_day() {
         bus_id: "cubesat".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     let start = sim.company.cash_usd;
     advance_days(&mut sim, 2.0);
     let spent = start - sim.company.cash_usd;
@@ -54,7 +55,8 @@ fn bankruptcy_fires_once_and_gates_actions() {
         bus_id: "cubesat".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     sim.company.cash_usd = 500.0;
 
     advance_days(&mut sim, 15.0);
@@ -101,7 +103,8 @@ fn completing_earth_contracts_completes_the_earth_program() {
         bus_id: "cubesat".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
 
     // Seed all but one as already completed, then finish the last one.
     for id in ["earth_imaging", "comms_relay", "science_multi", "rapid_eye"] {
@@ -110,12 +113,13 @@ fn completing_earth_contracts_completes_the_earth_program() {
     sim.company.reputation = 50.0; // clear polar_watch's rep gate
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "polar_watch".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    if let Some(c) = sim.company.active_contract.as_mut() {
+    if let Some(c) = sim.company.active_contracts.first_mut() {
         c.downlink_mb_done = c.downlink_mb_required;
     }
-    sim.check_contract();
+    sim.check_contracts();
 
     // Earth completion is a Program milestone now, not the campaign win —
     // the grand victory needs every Program (Moon, Mars, Venus...) done.
@@ -152,11 +156,13 @@ fn repeated_contract_pays_less_and_gives_no_reputation() {
     assert!(offer.available, "completed contracts stay repeatable");
     assert!((offer.payout_usd - 210_000.0).abs() < 1.0);
 
+    // No craft yet: accepting unassigned is legal (assignment comes later).
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "earth_imaging".into(),
+        assigned_craft_id: None,
     })
     .unwrap();
-    let contract = sim.company.active_contract.as_ref().unwrap();
+    let contract = common::only_contract(&sim);
     assert!((contract.payout_usd - 210_000.0).abs() < 1.0);
     assert_eq!(contract.reputation_reward, 0.0);
 }
@@ -168,7 +174,8 @@ fn time_accel_zero_pauses_the_simulation() {
         bus_id: "cubesat".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 0.0 })
         .unwrap();
 

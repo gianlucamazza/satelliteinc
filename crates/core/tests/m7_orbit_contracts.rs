@@ -9,22 +9,25 @@ fn launch(sim: &mut SimState, altitude_km: f64, inclination_deg: f64) {
     })
     .unwrap();
     sim.apply_action(PlayerAction::SetOrbit {
+        craft_id: 0,
         altitude_km,
         inclination_deg,
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
 }
 
 /// Downlink a pre-filled buffer with imaging and anomalies disabled, so the
 /// buffer can only shrink via downlink. Returns the MB actually transferred.
 fn downlink_some(sim: &mut SimState) -> f64 {
     sim.apply_action(PlayerAction::SetPayloadMode {
+        craft_id: 0,
         mode: satelliteinc_core::spacecraft::PayloadMode::Safe,
     })
     .unwrap();
     {
-        let craft = sim.spacecraft.as_mut().unwrap();
+        let craft = common::only_craft_mut(sim);
         craft.buffer_mb = 500.0;
         craft.anomaly_cooldown_until = f64::MAX;
     }
@@ -32,69 +35,65 @@ fn downlink_some(sim: &mut SimState) -> f64 {
         multiplier: 1_000.0,
     })
     .unwrap();
-    sim.apply_action(PlayerAction::SetDownlink { active: true })
-        .unwrap();
+    sim.apply_action(PlayerAction::SetDownlink {
+        craft_id: 0,
+        active: true,
+    })
+    .unwrap();
     for _ in 0..2_000 {
         sim.step(0.1);
-        if sim.spacecraft.as_ref().unwrap().buffer_mb < 400.0 {
+        if common::only_craft(sim).buffer_mb < 400.0 {
             break;
         }
     }
-    500.0 - sim.spacecraft.as_ref().unwrap().buffer_mb
+    500.0 - common::only_craft(sim).buffer_mb
 }
 
 #[test]
 fn out_of_spec_orbit_downlinks_but_accrues_nothing() {
     let mut sim = SimState::new(load_content()).unwrap();
+    launch(&mut sim, 400.0, 97.0); // needs >= 700 km
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "comms_relay".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    launch(&mut sim, 400.0, 97.0); // needs >= 700 km
 
-    assert_eq!(sim.snapshot().active_contract_orbit_ok, Some(false));
+    assert_eq!(sim.snapshot().active_contracts[0].orbit_ok, Some(false));
 
     let drained = downlink_some(&mut sim);
     assert!(
         drained > 50.0,
         "downlink itself must still flow ({drained} MB)"
     );
-    let done = sim
-        .company
-        .active_contract
-        .as_ref()
-        .unwrap()
-        .downlink_mb_done;
+    let done = sim.company.active_contracts[0].downlink_mb_done;
     assert_eq!(done, 0.0, "non-compliant orbit must not accrue progress");
 }
 
 #[test]
 fn compliant_orbit_accrues_progress() {
     let mut sim = SimState::new(load_content()).unwrap();
+    launch(&mut sim, 400.0, 97.0);
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "comms_relay".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    launch(&mut sim, 400.0, 97.0);
 
     // Jump straight to a compliant 720 km orbit.
-    let craft = sim.spacecraft.as_mut().unwrap();
+    let now = sim.clock.sim_seconds;
+    let craft = common::only_craft_mut(&mut sim);
     craft.elements = Some(circular_orbit(
         satelliteinc_core::constants::EARTH_RADIUS_KM,
         720.0,
         97.0,
-        sim.clock.sim_seconds,
+        now,
     ));
-    assert_eq!(sim.snapshot().active_contract_orbit_ok, Some(true));
+    assert_eq!(sim.snapshot().active_contracts[0].orbit_ok, Some(true));
 
     let drained = downlink_some(&mut sim);
     assert!(drained > 50.0);
-    let done = sim
-        .company
-        .active_contract
-        .as_ref()
-        .unwrap()
-        .downlink_mb_done;
+    let done = sim.company.active_contracts[0].downlink_mb_done;
     assert!(
         (done - drained).abs() < 1.0,
         "compliant orbit must accrue all downlinked data ({done} vs {drained})"
@@ -105,31 +104,33 @@ fn compliant_orbit_accrues_progress() {
 fn inclination_requirement_gates_polar_watch() {
     let mut sim = SimState::new(load_content()).unwrap();
     sim.company.reputation = 30.0; // clear the rep gate
+    launch(&mut sim, 500.0, 51.6); // needs >= 80 deg
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "polar_watch".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
+    assert_eq!(sim.snapshot().active_contracts[0].orbit_ok, Some(false));
 
-    launch(&mut sim, 500.0, 51.6); // needs >= 80 deg
-    assert_eq!(sim.snapshot().active_contract_orbit_ok, Some(false));
-
-    let craft = sim.spacecraft.as_mut().unwrap();
+    let now = sim.clock.sim_seconds;
+    let craft = common::only_craft_mut(&mut sim);
     craft.elements = Some(circular_orbit(
         satelliteinc_core::constants::EARTH_RADIUS_KM,
         500.0,
         97.0,
-        sim.clock.sim_seconds,
+        now,
     ));
-    assert_eq!(sim.snapshot().active_contract_orbit_ok, Some(true));
+    assert_eq!(sim.snapshot().active_contracts[0].orbit_ok, Some(true));
 }
 
 #[test]
 fn unconstrained_contract_reports_orbit_ok() {
     let mut sim = SimState::new(load_content()).unwrap();
+    launch(&mut sim, 400.0, 97.0);
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "earth_imaging".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    launch(&mut sim, 400.0, 97.0);
-    assert_eq!(sim.snapshot().active_contract_orbit_ok, Some(true));
+    assert_eq!(sim.snapshot().active_contracts[0].orbit_ok, Some(true));
 }

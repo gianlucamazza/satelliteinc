@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::SimState;
 use crate::clock::SimClock;
@@ -9,17 +10,26 @@ use crate::content::GameContent;
 use crate::error::SimError;
 use crate::ops::GroundStation;
 use crate::orbit::TlePropagator;
-use crate::spacecraft::Spacecraft;
+use crate::spacecraft::{CraftId, Spacecraft};
 
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
+
+/// One craft's pass-edge state, keyed by station id so the format survives
+/// station reordering between content versions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPassState {
+    pub craft_id: CraftId,
+    pub stations: HashMap<String, bool>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveGame {
     pub version: u32,
     pub clock: SimClock,
     pub company: CompanyState,
-    pub spacecraft: Option<Spacecraft>,
-    pub pass_active: HashMap<String, bool>,
+    pub spacecraft: Vec<Spacecraft>,
+    pub next_craft_id: CraftId,
+    pub pass_active: Vec<SavedPassState>,
 }
 
 impl SaveGame {
@@ -28,26 +38,82 @@ impl SaveGame {
     }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let mut v: Value = serde_json::from_str(json)?;
+        if v.get("version").and_then(Value::as_u64).unwrap_or(0) <= 3 {
+            migrate_v3(&mut v);
+        }
+        serde_json::from_value(v)
     }
+}
+
+/// v3 -> v4: the fleet turned every craft-shaped singleton into a
+/// collection (a TYPE change, so serde defaults cannot cover it). The old
+/// craft becomes fleet member id 0; its contract keeps servicing it.
+fn migrate_v3(v: &mut Value) {
+    let had_craft = v.get("spacecraft").is_some_and(Value::is_object);
+
+    // spacecraft: null → [] | {..} → [{.., "id": 0}]
+    let fleet = match v.get_mut("spacecraft").map(Value::take) {
+        Some(Value::Object(mut craft)) => {
+            craft.insert("id".into(), Value::from(0u32));
+            Value::Array(vec![Value::Object(craft)])
+        }
+        _ => Value::Array(vec![]),
+    };
+    v["spacecraft"] = fleet;
+
+    // company.active_contract: null → active_contracts: []
+    //   | {..} → [{.., assigned_craft_id: 0 when a craft existed}]
+    if let Some(company) = v.get_mut("company").and_then(Value::as_object_mut) {
+        let contracts = match company.remove("active_contract") {
+            Some(Value::Object(mut contract)) => {
+                if had_craft {
+                    contract.insert("assigned_craft_id".into(), Value::from(0u32));
+                }
+                Value::Array(vec![Value::Object(contract)])
+            }
+            _ => Value::Array(vec![]),
+        };
+        company.insert("active_contracts".into(), contracts);
+    }
+
+    // pass_active {station: bool} → [{craft_id: 0, stations: {..}}]
+    let stations = v.get_mut("pass_active").map(Value::take);
+    v["pass_active"] = match stations {
+        Some(map @ Value::Object(_)) if had_craft => Value::Array(vec![serde_json::json!({
+            "craft_id": 0,
+            "stations": map,
+        })]),
+        _ => Value::Array(vec![]),
+    };
+
+    v["next_craft_id"] = Value::from(u32::from(had_craft));
+    v["version"] = Value::from(4u32);
 }
 
 impl SimState {
     #[must_use]
     pub fn export_save(&self) -> SaveGame {
-        // The save keys pass state by station id so the format survives
-        // station reordering between content versions.
-        let pass_active: HashMap<String, bool> = self
-            .ground_stations
+        let pass_active: Vec<SavedPassState> = self
+            .fleet
             .iter()
             .zip(&self.pass_active)
-            .map(|(s, &active)| (s.id.clone(), active))
+            .map(|(craft, row)| SavedPassState {
+                craft_id: craft.id,
+                stations: self
+                    .ground_stations
+                    .iter()
+                    .zip(row)
+                    .map(|(s, &active)| (s.id.clone(), active))
+                    .collect(),
+            })
             .collect();
         SaveGame {
             version: SAVE_VERSION,
             clock: self.clock,
             company: self.company.clone(),
-            spacecraft: self.spacecraft.clone(),
+            spacecraft: self.fleet.clone(),
+            next_craft_id: self.next_craft_id,
             pass_active,
         }
     }
@@ -59,8 +125,6 @@ impl SimState {
                 save.version
             )));
         }
-        // v2 -> v3: pre-solar-system saves carry no body ids; serde defaults
-        // already filled `body_id: "earth"` during deserialization.
         let bodies = crate::body::BodyRegistry::from_content(&content.bodies)?;
         let ground_stations: Vec<GroundStation> = content
             .ground_stations
@@ -72,32 +136,63 @@ impl SimState {
             .iter()
             .filter_map(|e| TlePropagator::from_entry(e).ok())
             .collect();
-        // Reconcile against the provided content: an active contract whose
-        // template no longer exists cannot be tracked in the marketplace.
-        let mut company = save.company;
-        if let Some(active) = &company.active_contract
-            && content.contract(&active.template_id).is_none()
-        {
-            company.active_contract = None;
-        }
+
         // A craft around a body the content no longer defines cannot be
         // propagated; reject rather than silently relocate it.
-        if let Some(craft) = &save.spacecraft
-            && bodies.get(&craft.body_id).is_none()
-        {
-            return Err(SimError::Content(format!(
-                "save references unknown body '{}'",
-                craft.body_id
-            )));
+        for craft in &save.spacecraft {
+            if bodies.get(&craft.body_id).is_none() {
+                return Err(SimError::Content(format!(
+                    "save references unknown body '{}'",
+                    craft.body_id
+                )));
+            }
         }
-        let pass_active: Vec<bool> = ground_stations
+
+        // Reconcile against the provided content: drop contracts whose
+        // template vanished; clear assignments to craft that don't exist.
+        let mut company = save.company;
+        company
+            .active_contracts
+            .retain(|c| content.contract(&c.template_id).is_some());
+        for contract in &mut company.active_contracts {
+            if let Some(id) = contract.assigned_craft_id
+                && !save.spacecraft.iter().any(|c| c.id == id)
+            {
+                contract.assigned_craft_id = None;
+            }
+        }
+
+        // Rebuild the pass matrix in fleet order; rows for unknown craft are
+        // dropped, missing rows default to no active edges.
+        let pass_active: Vec<Vec<bool>> = save
+            .spacecraft
             .iter()
-            .map(|s| save.pass_active.get(&s.id).copied().unwrap_or(false))
+            .map(|craft| {
+                let saved = save.pass_active.iter().find(|p| p.craft_id == craft.id);
+                ground_stations
+                    .iter()
+                    .map(|s| {
+                        saved
+                            .and_then(|p| p.stations.get(&s.id).copied())
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            })
             .collect();
+
+        let next_craft_id = save
+            .spacecraft
+            .iter()
+            .map(|c| c.id + 1)
+            .max()
+            .unwrap_or(0)
+            .max(save.next_craft_id);
+
         Ok(Self {
             clock: save.clock,
             company,
-            spacecraft: save.spacecraft,
+            fleet: save.spacecraft,
+            next_craft_id,
             bodies,
             pass_active,
             ground_stations,

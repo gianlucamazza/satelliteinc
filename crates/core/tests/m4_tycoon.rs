@@ -77,9 +77,11 @@ fn contract_deadline_expiry_fails_contract_and_costs_reputation() {
     .unwrap();
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "earth_imaging".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     let rep_before = sim.company.reputation;
 
     // Let the 7-day deadline lapse without downlinking anything.
@@ -101,7 +103,7 @@ fn contract_deadline_expiry_fails_contract_and_costs_reputation() {
     }
 
     assert!(failed, "deadline expiry must emit ContractFailed");
-    assert!(sim.company.active_contract.is_none());
+    assert!(sim.company.active_contracts.is_empty());
     assert!(
         sim.company.reputation < rep_before,
         "failure must cost reputation"

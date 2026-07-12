@@ -19,10 +19,10 @@ use crate::orbit::{
     eci_velocity_km_s, orbit_trail_samples, seconds_to_apsides,
 };
 use crate::snapshot::{
-    BodySnapshot, GamePhase, ProgramSnapshot, Snapshot, SpacecraftSnapshot, StationSnapshot,
-    TransferPlannerSnapshot, TransferSnapshot,
+    ActiveContractSnapshot, BodySnapshot, CraftStationStatus, GamePhase, ProgramSnapshot, Snapshot,
+    SpacecraftSnapshot, StationSnapshot, TransferPlannerSnapshot, TransferSnapshot,
 };
-use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, Spacecraft};
+use crate::spacecraft::{CraftId, CraftPhase, HohmannPlanSnapshot, PayloadMode, Spacecraft};
 
 const STEP_DT_SECONDS: f64 = 1.0;
 const STARTING_CASH: f64 = 450_000.0;
@@ -40,15 +40,18 @@ pub const WARP_CHUNK_SECONDS: f64 = 2_000_000.0;
 pub struct SimState {
     pub clock: SimClock,
     pub company: crate::company::CompanyState,
-    pub spacecraft: Option<Spacecraft>,
+    /// The fleet, in creation order (deterministic iteration).
+    pub fleet: Vec<Spacecraft>,
+    /// Monotonic craft id source; never reused.
+    pub next_craft_id: CraftId,
     pub bodies: BodyRegistry,
     pub ground_stations: Vec<GroundStation>,
     pub content: GameContent,
     pub event_queue: Vec<SimEvent>,
     pub tle_propagators: Vec<TlePropagator>,
-    /// Per-station pass edge state, indexed parallel to `ground_stations`
-    /// (saves serialize it keyed by station id — see `export_save`).
-    pub pass_active: Vec<bool>,
+    /// Pass edge state per craft per station: `pass_active[craft_idx][station_idx]`,
+    /// rows kept in lockstep with `fleet` by `add_craft`/`remove_craft` only.
+    pub pass_active: Vec<Vec<bool>>,
     /// Per-tick cache for SGP4 reference-satellite states (snapshot runs per frame).
     pub(crate) ref_sat_cache: std::cell::RefCell<Option<(u64, Vec<ReferenceSatellite>)>>,
 }
@@ -77,9 +80,10 @@ impl SimState {
                 GameMode::Campaign,
                 &content,
             ),
-            spacecraft: None,
+            fleet: Vec::new(),
+            next_craft_id: 0,
             bodies,
-            pass_active: vec![false; ground_stations.len()],
+            pass_active: Vec::new(),
             ground_stations,
             content,
             event_queue: Vec::new(),
@@ -88,16 +92,89 @@ impl SimState {
         })
     }
 
-    /// Central body of the current spacecraft (earth while in design or
-    /// without a craft). `body_id` is validated on load/import.
-    pub fn craft_body(&self) -> &CelestialBody {
-        match self.spacecraft.as_ref() {
-            Some(c) => self
-                .bodies
-                .get(&c.body_id)
-                .expect("spacecraft body_id validated on load"),
-            None => self.bodies.earth(),
+    /// Central body of a craft. `body_id` is validated on load/import.
+    pub fn craft_body_of(&self, craft: &Spacecraft) -> &CelestialBody {
+        self.bodies
+            .get(&craft.body_id)
+            .expect("spacecraft body_id validated on load")
+    }
+
+    /// Craft by id.
+    pub fn craft(&self, id: CraftId) -> Result<&Spacecraft, SimError> {
+        self.fleet
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| SimError::InvalidAction(format!("no such craft: {id}")))
+    }
+
+    pub fn craft_mut(&mut self, id: CraftId) -> Result<&mut Spacecraft, SimError> {
+        self.fleet
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(|| SimError::InvalidAction(format!("no such craft: {id}")))
+    }
+
+    fn craft_idx(&self, id: CraftId) -> Option<usize> {
+        self.fleet.iter().position(|c| c.id == id)
+    }
+
+    fn craft_in_phase_mut(
+        &mut self,
+        id: CraftId,
+        required: CraftPhase,
+    ) -> Result<&mut Spacecraft, SimError> {
+        let craft = self.craft_mut(id)?;
+        if craft.phase != required {
+            return Err(SimError::WrongPhase);
         }
+        Ok(craft)
+    }
+
+    /// The ONLY way fleet/pass_active rows are added: keeps them in lockstep.
+    pub(crate) fn add_craft(&mut self, craft: Spacecraft) -> CraftId {
+        let id = craft.id;
+        self.next_craft_id = self.next_craft_id.max(id + 1);
+        self.fleet.push(craft);
+        self.pass_active
+            .push(vec![false; self.ground_stations.len()]);
+        id
+    }
+
+    /// The ONLY way fleet/pass_active rows are removed. Clears contract
+    /// assignments pointing at the removed craft.
+    fn remove_craft(&mut self, idx: usize) -> Spacecraft {
+        let craft = self.fleet.remove(idx);
+        self.pass_active.remove(idx);
+        for contract in self
+            .company
+            .active_contracts
+            .iter_mut()
+            .filter(|c| c.assigned_craft_id == Some(craft.id))
+        {
+            contract.assigned_craft_id = None;
+            self.event_queue.push(SimEvent::ContractAssignmentChanged {
+                contract_id: contract.template_id.clone(),
+                craft_id: None,
+            });
+        }
+        craft
+    }
+
+    /// Contract cap: M14a keeps the historical single slot; Mission
+    /// Control slots (M15) will raise this.
+    // M15 raises this via Mission Control slots; &self stays in the
+    // signature deliberately (the cap will read company state).
+    #[allow(clippy::unused_self)]
+    fn max_active_contracts(&self) -> usize {
+        1
+    }
+
+    /// The contract currently assigned to a craft, if any (1:1 binding).
+    fn contract_assigned_to(&self, craft_id: CraftId) -> Option<&ActiveContract> {
+        self.company
+            .active_contracts
+            .iter()
+            .find(|c| c.assigned_craft_id == Some(craft_id))
     }
 
     /// Whether a station can serve a craft at the given body: local dishes
@@ -165,12 +242,9 @@ impl SimState {
 
     /// Validate and start an interplanetary transfer: cash pays the
     /// injection, propellant for the capture burn is reserved up front.
-    fn begin_transfer(&mut self) -> Result<(), SimError> {
+    fn begin_transfer(&mut self, craft_id: CraftId) -> Result<(), SimError> {
         let now = self.clock.sim_seconds;
-        let craft = self
-            .spacecraft
-            .as_ref()
-            .ok_or_else(|| SimError::InvalidAction("no spacecraft".into()))?;
+        let craft = self.craft(craft_id)?;
         if craft.phase != CraftPhase::OnOrbit {
             return Err(SimError::WrongPhase);
         }
@@ -247,7 +321,8 @@ impl SimState {
         };
 
         self.company.cash_usd -= injection_cost;
-        let craft = self.spacecraft.as_mut().expect("checked above");
+        let idx = self.craft_idx(craft_id).expect("checked above");
+        let craft = &mut self.fleet[idx];
         craft.propellant_kg -= reserved_kg;
         craft.phase = CraftPhase::Transfer;
         craft.body_id = frame_body_id;
@@ -255,8 +330,9 @@ impl SimState {
         craft.pending_hohmann = None;
         craft.downlink_active = false;
         craft.transfer = Some(transfer);
-        self.pass_active.fill(false);
+        self.pass_active[idx].fill(false);
         self.push_event(SimEvent::TransferStarted {
+            craft_id,
             target_body_id: target_sel.body_id,
             arrival_sim_seconds: arrival,
             injection_cost_usd: injection_cost,
@@ -266,10 +342,9 @@ impl SimState {
 
     /// Arrival: automatic capture into the reserved parking orbit. The
     /// propellant was deducted at departure, so this can never strand.
-    fn complete_arrival(&mut self) {
-        let Some(craft) = self.spacecraft.as_mut() else {
-            return;
-        };
+    fn complete_arrival(&mut self, idx: usize) {
+        let craft = &mut self.fleet[idx];
+        let craft_id = craft.id;
         let Some(transfer) = craft.transfer.take() else {
             return;
         };
@@ -301,11 +376,14 @@ impl SimState {
             .iter()
             .find(|st| Self::station_reachable(st, &target_id))
             .map(|st| st.id.clone());
-        let craft = self.spacecraft.as_mut().expect("still here");
-        craft.downlink_station_id = default_station;
-        self.pass_active.fill(false);
-        self.push_event(SimEvent::TransferArrived { body_id: target_id });
+        self.fleet[idx].downlink_station_id = default_station;
+        self.pass_active[idx].fill(false);
+        self.push_event(SimEvent::TransferArrived {
+            craft_id,
+            body_id: target_id,
+        });
         self.push_event(SimEvent::CaptureExecuted {
+            craft_id,
             delta_v_km_s: transfer.capture_dv_km_s,
         });
     }
@@ -324,15 +402,6 @@ impl SimState {
         }
         match action {
             PlayerAction::SelectBus { bus_id } => {
-                if self
-                    .spacecraft
-                    .as_ref()
-                    .is_some_and(|c| c.phase == CraftPhase::OnOrbit)
-                {
-                    return Err(SimError::InvalidAction(
-                        "decommission the current satellite first".into(),
-                    ));
-                }
                 if !self.company.is_bus_unlocked(&bus_id) {
                     return Err(SimError::InvalidAction(format!(
                         "bus not unlocked: {bus_id}"
@@ -343,26 +412,53 @@ impl SimState {
                     .bus(&bus_id)
                     .ok_or_else(|| SimError::Content(format!("unknown bus: {bus_id}")))?
                     .clone();
-                self.spacecraft = Some(Spacecraft::new_from_bus(&bus, &bus.name));
+                // Re-selecting while a craft is still on the drawing board
+                // replaces it (same UX as before the fleet); flying craft
+                // are untouched.
+                if let Some(idx) = self
+                    .fleet
+                    .iter()
+                    .position(|c| c.phase == CraftPhase::Design)
+                {
+                    self.remove_craft(idx);
+                }
+                let id = self.next_craft_id;
+                let name = format!("{}-{}", bus.name, id + 1);
+                self.add_craft(Spacecraft::new_from_bus(&bus, &name, id));
                 self.push_event(SimEvent::ActionApplied {
-                    message: format!("Selected bus: {}", bus.name),
+                    message: format!("Selected bus: {} ({name})", bus.name),
                 });
             }
             PlayerAction::SetOrbit {
+                craft_id,
                 altitude_km,
                 inclination_deg,
             } => {
                 let (min_park, max_park) = {
-                    let body = self.craft_body();
+                    let body = self.craft_body_of(self.craft(craft_id)?);
                     (body.min_parking_altitude_km, body.max_parking_altitude_km)
                 };
-                let craft = self.spacecraft_mut(CraftPhase::Design)?;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
                 craft.target_altitude_km = altitude_km.clamp(min_park, max_park);
                 craft.target_inclination_deg = inclination_deg.clamp(0.0, 98.0);
             }
-            PlayerAction::AcceptContract { contract_id } => {
-                if self.company.active_contract.is_some() {
+            PlayerAction::AcceptContract {
+                contract_id,
+                assigned_craft_id,
+            } => {
+                if self.company.active_contracts.len() >= self.max_active_contracts() {
+                    return Err(SimError::InvalidAction("contract slots full".into()));
+                }
+                if self.company.contract_by_template(&contract_id).is_some() {
                     return Err(SimError::InvalidAction("contract already active".into()));
+                }
+                if let Some(craft_id) = assigned_craft_id {
+                    self.craft(craft_id)?;
+                    if self.contract_assigned_to(craft_id).is_some() {
+                        return Err(SimError::InvalidAction(
+                            "craft already has an assigned contract".into(),
+                        ));
+                    }
                 }
                 let offer = self
                     .company
@@ -394,8 +490,9 @@ impl SimState {
                     contract.advance_paid_usd = advance;
                     self.company.cash_usd += advance;
                 }
+                contract.assigned_craft_id = assigned_craft_id;
                 let advance = contract.advance_paid_usd;
-                self.company.active_contract = Some(contract);
+                self.company.active_contracts.push(contract);
                 self.push_event(SimEvent::ActionApplied {
                     message: if advance > 0.0 {
                         format!(
@@ -407,9 +504,9 @@ impl SimState {
                     },
                 });
             }
-            PlayerAction::Launch => {
+            PlayerAction::Launch { craft_id } => {
                 let (cost, alt, inc) = {
-                    let craft = self.spacecraft_mut(CraftPhase::Design)?;
+                    let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
                     (
                         craft.bus.launch_cost_usd,
                         craft.target_altitude_km,
@@ -421,44 +518,48 @@ impl SimState {
                     return Err(SimError::InsufficientFunds(cost));
                 }
                 let elements = circular_orbit(
-                    self.craft_body().radius_km,
+                    self.craft_body_of(self.craft(craft_id)?).radius_km,
                     alt,
                     inc,
                     self.clock.sim_seconds,
                 );
                 let default_station = self.ground_stations.first().map(|s| s.id.clone());
                 self.company.cash_usd -= cost;
-                let craft = self.spacecraft_mut(CraftPhase::Design)?;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
                 craft.phase = CraftPhase::OnOrbit;
                 craft.elements = Some(elements);
                 craft.downlink_active = false;
                 if craft.downlink_station_id.is_none() {
                     craft.downlink_station_id = default_station;
                 }
+                let craft_name = craft.name.clone();
                 self.push_event(SimEvent::Launched {
+                    craft_id,
+                    craft_name,
                     altitude_km: alt,
                     inclination_deg: inc,
                 });
             }
-            PlayerAction::SetDownlink { active } => {
-                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+            PlayerAction::SetDownlink { craft_id, active } => {
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft.downlink_active = active;
             }
             PlayerAction::SetTimeAccel { multiplier } => {
                 // 0 pauses the simulation.
                 self.clock.time_accel = multiplier.clamp(0.0, 100_000.0);
             }
-            PlayerAction::ProgradeBurn { delta_v_km_s } => {
+            PlayerAction::ProgradeBurn {
+                craft_id,
+                delta_v_km_s,
+            } => {
                 let isp_mult = self.company.isp_multiplier;
-                let body = self.craft_body().clone();
-                let craft = self.spacecraft.as_mut().ok_or(SimError::WrongPhase)?;
-                if craft.phase != CraftPhase::OnOrbit {
-                    return Err(SimError::WrongPhase);
-                }
+                let body = self.craft_body_of(self.craft(craft_id)?).clone();
+                let now = self.clock.sim_seconds;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 let result = execute_prograde_burn(
                     &body,
                     craft,
-                    self.clock.sim_seconds,
+                    now,
                     delta_v_km_s.clamp(0.001, 2.0),
                     false,
                     isp_mult,
@@ -467,17 +568,18 @@ impl SimState {
                     self.push_event(ev);
                 }
             }
-            PlayerAction::RetrogradeBurn { delta_v_km_s } => {
+            PlayerAction::RetrogradeBurn {
+                craft_id,
+                delta_v_km_s,
+            } => {
                 let isp_mult = self.company.isp_multiplier;
-                let body = self.craft_body().clone();
-                let craft = self.spacecraft.as_mut().ok_or(SimError::WrongPhase)?;
-                if craft.phase != CraftPhase::OnOrbit {
-                    return Err(SimError::WrongPhase);
-                }
+                let body = self.craft_body_of(self.craft(craft_id)?).clone();
+                let now = self.clock.sim_seconds;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 let result = execute_prograde_burn(
                     &body,
                     craft,
-                    self.clock.sim_seconds,
+                    now,
                     delta_v_km_s.clamp(0.001, 2.0),
                     true,
                     isp_mult,
@@ -486,44 +588,40 @@ impl SimState {
                     self.push_event(ev);
                 }
             }
-            PlayerAction::SetManeuverTarget { target_altitude_km } => {
+            PlayerAction::SetManeuverTarget {
+                craft_id,
+                target_altitude_km,
+            } => {
                 let (min_park, max_park) = {
-                    let body = self.craft_body();
+                    let body = self.craft_body_of(self.craft(craft_id)?);
                     (body.min_parking_altitude_km, body.max_parking_altitude_km)
                 };
-                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft.maneuver_target_altitude_km = target_altitude_km.clamp(min_park, max_park);
             }
-            PlayerAction::StartHohmann => {
+            PlayerAction::StartHohmann { craft_id } => {
                 let isp_mult = self.company.isp_multiplier;
-                let body = self.craft_body().clone();
-                let craft = self.spacecraft.as_mut().ok_or(SimError::WrongPhase)?;
-                if craft.phase != CraftPhase::OnOrbit {
-                    return Err(SimError::WrongPhase);
-                }
+                let body = self.craft_body_of(self.craft(craft_id)?).clone();
+                let now = self.clock.sim_seconds;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 let target = craft.maneuver_target_altitude_km;
-                let result = start_hohmann(&body, craft, self.clock.sim_seconds, target, isp_mult)?;
+                let result = start_hohmann(&body, craft, now, target, isp_mult)?;
                 for ev in result.events {
                     self.push_event(ev);
                 }
             }
-            PlayerAction::CompleteHohmann => {
+            PlayerAction::CompleteHohmann { craft_id } => {
                 let isp_mult = self.company.isp_multiplier;
-                let body = self.craft_body().clone();
-                let craft = self.spacecraft.as_mut().ok_or(SimError::WrongPhase)?;
-                if craft.phase != CraftPhase::OnOrbit {
-                    return Err(SimError::WrongPhase);
-                }
-                let result = complete_hohmann(&body, craft, self.clock.sim_seconds, isp_mult)?;
+                let body = self.craft_body_of(self.craft(craft_id)?).clone();
+                let now = self.clock.sim_seconds;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
+                let result = complete_hohmann(&body, craft, now, isp_mult)?;
                 for ev in result.events {
                     self.push_event(ev);
                 }
             }
-            PlayerAction::Decommission => {
-                let craft = self
-                    .spacecraft
-                    .as_ref()
-                    .ok_or_else(|| SimError::InvalidAction("no spacecraft".into()))?;
+            PlayerAction::Decommission { craft_id } => {
+                let craft = self.craft(craft_id)?;
                 let salvage = match craft.phase {
                     CraftPhase::OnOrbit => craft.bus.launch_cost_usd * SALVAGE_FRACTION,
                     // Deep space has no salvage yard: abandoning a cruise
@@ -531,23 +629,27 @@ impl SimState {
                     CraftPhase::Transfer => 0.0,
                     CraftPhase::Design => return Err(SimError::WrongPhase),
                 };
-                self.spacecraft = None;
-                // Stale pass edges would suppress the next mission's PassStarted events.
-                self.pass_active.fill(false);
+                let idx = self.craft_idx(craft_id).expect("checked above");
+                let craft = self.remove_craft(idx);
                 self.company.cash_usd += salvage;
                 self.push_event(SimEvent::Decommissioned {
+                    craft_id,
+                    craft_name: craft.name,
                     salvage_usd: salvage,
                 });
             }
-            PlayerAction::SetPayloadMode { mode } => {
-                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+            PlayerAction::SetPayloadMode { craft_id, mode } => {
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft.payload_mode = mode;
                 // Manual mode change overrides any commanded safe-mode hold.
                 craft.safe_mode_until = 0.0;
                 craft.payload_mode_before_safe = None;
             }
-            PlayerAction::SelectDownlinkStation { station_id } => {
-                let craft_body_id = self.craft_body().id.clone();
+            PlayerAction::SelectDownlinkStation {
+                craft_id,
+                station_id,
+            } => {
+                let craft_body_id = self.craft_body_of(self.craft(craft_id)?).id.clone();
                 let station = self
                     .ground_stations
                     .iter()
@@ -558,14 +660,15 @@ impl SimState {
                         "station {station_id} cannot serve a craft at {craft_body_id}"
                     )));
                 }
-                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft.downlink_station_id = Some(station_id);
             }
             PlayerAction::QueueCommand {
+                craft_id,
                 command,
                 station_id,
             } => {
-                let craft_body_id = self.craft_body().id.clone();
+                let craft_body_id = self.craft_body_of(self.craft(craft_id)?).id.clone();
                 let station = self
                     .ground_stations
                     .iter()
@@ -577,7 +680,7 @@ impl SimState {
                     )));
                 }
                 let sim_seconds = self.clock.sim_seconds;
-                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft
                     .command_queue
                     .push(QueuedCommand::new(command, station_id, sim_seconds));
@@ -610,6 +713,7 @@ impl SimState {
                 });
             }
             PlayerAction::SetTransferTarget {
+                craft_id,
                 body_id,
                 capture_altitude_km,
                 capture_inclination_deg,
@@ -623,15 +727,48 @@ impl SimState {
                     target.max_parking_altitude_km,
                 );
                 let inclination = capture_inclination_deg.clamp(0.0, 98.0);
-                let craft = self.spacecraft_mut(CraftPhase::OnOrbit)?;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft.transfer_target = Some(crate::spacecraft::TransferTarget {
                     body_id,
                     capture_altitude_km: altitude,
                     capture_inclination_deg: inclination,
                 });
             }
-            PlayerAction::BeginTransfer => {
-                self.begin_transfer()?;
+            PlayerAction::BeginTransfer { craft_id } => {
+                self.begin_transfer(craft_id)?;
+            }
+            PlayerAction::AssignContract {
+                contract_id,
+                craft_id,
+            } => {
+                if let Some(id) = craft_id {
+                    self.craft(id)?;
+                    if self
+                        .contract_assigned_to(id)
+                        .is_some_and(|c| c.template_id != contract_id)
+                    {
+                        return Err(SimError::InvalidAction(
+                            "craft already has an assigned contract".into(),
+                        ));
+                    }
+                }
+                let contract = self
+                    .company
+                    .active_contracts
+                    .iter_mut()
+                    .find(|c| c.template_id == contract_id)
+                    .ok_or_else(|| {
+                        SimError::InvalidAction(format!("contract not active: {contract_id}"))
+                    })?;
+                if contract.assigned_craft_id != craft_id {
+                    // Anti tag-team: presence time restarts with a new crew.
+                    contract.on_station_seconds = 0.0;
+                }
+                contract.assigned_craft_id = craft_id;
+                self.push_event(SimEvent::ContractAssignmentChanged {
+                    contract_id,
+                    craft_id,
+                });
             }
             PlayerAction::UnlockProgram { program_id } => {
                 let program = self
@@ -753,9 +890,22 @@ impl SimState {
             }
         }
 
-        let Some(craft_ref) = self.spacecraft.as_ref() else {
-            return;
-        };
+        debug_assert_eq!(
+            self.pass_active.len(),
+            self.fleet.len(),
+            "pass_active rows must track the fleet"
+        );
+        for idx in 0..self.fleet.len() {
+            self.tick_craft(idx, dt);
+        }
+        self.check_contracts();
+    }
+
+    /// One craft's share of the tick: mechanical transcription of the old
+    /// single-craft body, scoped to `fleet[idx]`.
+    fn tick_craft(&mut self, idx: usize, dt: f64) {
+        let craft_ref = &self.fleet[idx];
+        let craft_id = craft_ref.id;
         if craft_ref.phase == CraftPhase::Transfer {
             // Hibernated cruise: no power/imaging/pass/anomaly processing —
             // only the arrival check (inside the 1 s tick, so warp and
@@ -765,8 +915,7 @@ impl SimState {
                 .as_ref()
                 .is_some_and(|t| self.clock.sim_seconds >= t.arrival_sim_seconds)
             {
-                self.complete_arrival();
-                self.check_contract();
+                self.complete_arrival(idx);
             }
             return;
         }
@@ -780,7 +929,7 @@ impl SimState {
         let sim_seconds = self.clock.sim_seconds;
         let craft_body_id = craft_ref.body_id.clone();
         let (mu, radius, rotation, body_idx) = {
-            let body = self.craft_body();
+            let body = self.craft_body_of(craft_ref);
             (
                 body.mu_km3_s2,
                 body.radius_km,
@@ -825,36 +974,41 @@ impl SimState {
                 false
             };
             station_passes[i] = in_pass;
-            let was_active = self.pass_active[i];
+            let was_active = self.pass_active[idx][i];
             if in_pass && !was_active {
                 pass_events.push(SimEvent::PassStarted {
+                    craft_id,
                     station_id: station.id.clone(),
                     station_name: station.name.clone(),
                 });
                 pass_starts.push((station.id.clone(), station.name.clone()));
             } else if !in_pass && was_active {
                 pass_events.push(SimEvent::PassEnded {
+                    craft_id,
                     station_id: station.id.clone(),
                 });
             }
-            self.pass_active[i] = in_pass;
+            self.pass_active[idx][i] = in_pass;
         }
         for (id, name) in pass_starts {
-            self.try_execute_queued_command(&id, &name);
+            self.try_execute_queued_command(idx, &id, &name);
         }
 
         let mut anomaly_events = Vec::new();
         {
-            let craft = self.spacecraft.as_mut().unwrap();
+            let flavor = self.bodies.body(body_idx).anomaly_flavor.clone();
+            let body_rate = self.bodies.body(body_idx).anomaly_rate_multiplier;
+            let craft = &mut self.fleet[idx];
             if let Some(a) = craft.active_anomaly.clone()
                 && a.is_expired(sim_seconds)
             {
-                anomaly_events.push(SimEvent::AnomalyCleared { kind: a.kind });
+                anomaly_events.push(SimEvent::AnomalyCleared {
+                    craft_id,
+                    kind: a.kind,
+                });
                 craft.active_anomaly = None;
                 craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
             }
-            let flavor = self.bodies.body(body_idx).anomaly_flavor.clone();
-            let body_rate = self.bodies.body(body_idx).anomaly_rate_multiplier;
             if craft.active_anomaly.is_none()
                 && let Some(kind) = roll_anomaly(
                     sim_seconds,
@@ -885,11 +1039,24 @@ impl SimState {
                 }
                 craft.active_anomaly = Some(anomaly);
                 craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
-                anomaly_events.push(SimEvent::AnomalyStarted { kind, label });
+                anomaly_events.push(SimEvent::AnomalyStarted {
+                    craft_id,
+                    kind,
+                    label,
+                });
             }
         }
 
-        let craft = self.spacecraft.as_mut().unwrap();
+        let anomaly_solar_penalty = self
+            .bodies
+            .body(body_idx)
+            .anomaly_flavor
+            .as_ref()
+            .map_or(1.0, |f| f.solar_penalty_while_active);
+        let deep_space_mult = self.company.deep_space_comms_multiplier;
+        let body_dsn_factor = self.bodies.body(body_idx).dsn_bandwidth_factor;
+        let _ = body_dsn_factor;
+        let craft = &mut self.fleet[idx];
 
         if craft.safe_mode_until > 0.0 && sim_seconds >= craft.safe_mode_until {
             craft.safe_mode_until = 0.0;
@@ -911,12 +1078,6 @@ impl SimState {
             })
             .unwrap_or_else(|| station_passes.iter().any(|&p| p));
 
-        let anomaly_solar_penalty = self
-            .bodies
-            .body(body_idx)
-            .anomaly_flavor
-            .as_ref()
-            .map_or(1.0, |f| f.solar_penalty_while_active);
         let balance =
             craft.power_balance_w(sunlight, solar_mult, sim_seconds, anomaly_solar_penalty);
         craft.power_wh = (craft.power_wh + balance * dt / 3600.0).clamp(0.0, craft.bus.battery_wh);
@@ -934,20 +1095,24 @@ impl SimState {
                 .downlink_station_id
                 .as_ref()
                 .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                .map(|s| {
-                    Self::station_bandwidth_for(s, body, self.company.deep_space_comms_multiplier)
-                });
+                .map(|s| Self::station_bandwidth_for(s, body, deep_space_mult));
             let rate = craft.downlink_rate_mb_s(comms_mult, station_bandwidth, sim_seconds);
             transferred = (rate * dt).min(craft.buffer_mb);
             craft.buffer_mb -= transferred;
         }
+        let downlink_station_id = craft.downlink_station_id.clone();
 
+        // Accrual routes ONLY through the assigned craft (1:1 binding).
         if transferred > 0.0
-            && let Some(station_id) = craft.downlink_station_id.clone()
-            && let Some(contract) = self.company.active_contract.as_mut()
+            && let Some(station_id) = downlink_station_id
+            && let Some(contract) = self
+                .company
+                .active_contracts
+                .iter_mut()
+                .find(|c| c.assigned_craft_id == Some(craft_id))
         {
-            // Data downlinked from a non-compliant orbit is not accepted.
-            if contract.orbit_ok(&elements, radius) {
+            // Data from the wrong body or a non-compliant orbit is not accepted.
+            if contract.body_id == craft_body_id && contract.orbit_ok(&elements, radius) {
                 contract.downlink_mb_done += transferred;
                 if !contract.stations_used.contains(&station_id) {
                     contract.stations_used.push(station_id);
@@ -956,7 +1121,11 @@ impl SimState {
         }
 
         // Presence contracts: time in a compliant orbit counts on its own.
-        if let Some(contract) = self.company.active_contract.as_mut()
+        if let Some(contract) = self
+            .company
+            .active_contracts
+            .iter_mut()
+            .find(|c| c.assigned_craft_id == Some(craft_id))
             && contract.min_on_station_days > 0.0
             && contract.body_id == craft_body_id
             && contract.orbit_ok(&elements, radius)
@@ -967,13 +1136,16 @@ impl SimState {
         for event in pass_events.into_iter().chain(anomaly_events) {
             self.push_event(event);
         }
-        self.check_contract();
     }
 
-    fn try_execute_queued_command(&mut self, station_id: &str, station_name: &str) {
-        let Some(craft) = self.spacecraft.as_mut() else {
-            return;
-        };
+    fn try_execute_queued_command(
+        &mut self,
+        craft_idx: usize,
+        station_id: &str,
+        station_name: &str,
+    ) {
+        let craft = &mut self.fleet[craft_idx];
+        let craft_id = craft.id;
         let idx = craft
             .command_queue
             .iter()
@@ -988,6 +1160,7 @@ impl SimState {
                 {
                     craft.clear_anomaly(self.clock.sim_seconds);
                     self.push_event(SimEvent::AnomalyCleared {
+                        craft_id,
                         kind: AnomalyType::CommsDropout,
                     });
                 }
@@ -1008,92 +1181,99 @@ impl SimState {
             CommandType::ClearAnomaly => {
                 if let Some(a) = craft.active_anomaly.clone() {
                     craft.clear_anomaly(self.clock.sim_seconds);
-                    self.push_event(SimEvent::AnomalyCleared { kind: a.kind });
+                    self.push_event(SimEvent::AnomalyCleared {
+                        craft_id,
+                        kind: a.kind,
+                    });
                 }
             }
         }
         self.push_event(SimEvent::CommandExecuted {
+            craft_id,
             command: format!("{:?}", cmd.command).to_lowercase(),
             station_name: station_name.to_string(),
             message: msg,
         });
     }
 
-    pub fn check_contract(&mut self) {
-        let Some(contract) = self.company.active_contract.as_mut() else {
-            return;
-        };
+    pub fn check_contracts(&mut self) {
+        let mut i = 0;
+        while i < self.company.active_contracts.len() {
+            let contract = &self.company.active_contracts[i];
 
-        if contract.is_complete() {
-            // The advance was cash on acceptance: pay out the remainder.
-            let total_payout = contract.payout_usd;
-            let payout = total_payout - contract.advance_paid_usd;
-            let rep = contract.reputation_reward;
-            let id = contract.template_id.clone();
-            let body_id = contract.body_id.clone();
-            self.company.cash_usd += payout;
-            self.company.completed_contracts.push(id.clone());
-            self.company.reputation = (self.company.reputation + rep).min(300.0);
-            self.push_event(SimEvent::ContractCompleted {
-                contract_id: id,
-                payout_usd: total_payout,
-            });
-            self.push_event(SimEvent::ReputationChanged {
-                delta: rep,
-                new_value: self.company.reputation,
-            });
-            self.company.active_contract = None;
-
-            // Program milestone: every contract of the body done once.
-            if self.company.game_mode == GameMode::Campaign
-                && let Some(program) = self.content.program_for_body(&body_id).cloned()
-                && !self.company.completed_programs.contains(&program.id)
-                && self
-                    .company
-                    .program_contracts_complete(&self.content, &body_id)
-            {
-                self.company.completed_programs.push(program.id.clone());
-                self.company.cash_usd += program.completion_grant_usd;
-                self.push_event(SimEvent::ProgramCompleted {
-                    program_id: program.id,
-                    grant_usd: program.completion_grant_usd,
+            if contract.is_complete() {
+                let contract = self.company.active_contracts.remove(i);
+                // The advance was cash on acceptance: pay out the remainder.
+                let total_payout = contract.payout_usd;
+                let payout = total_payout - contract.advance_paid_usd;
+                let rep = contract.reputation_reward;
+                let id = contract.template_id.clone();
+                let body_id = contract.body_id.clone();
+                self.company.cash_usd += payout;
+                self.company.completed_contracts.push(id.clone());
+                self.company.reputation = (self.company.reputation + rep).min(300.0);
+                self.push_event(SimEvent::ContractCompleted {
+                    contract_id: id,
+                    payout_usd: total_payout,
                 });
-            }
-            if self.company.game_mode == GameMode::Campaign
-                && self.company.outcome.is_none()
-                && self.company.all_contracts_completed(&self.content)
-            {
-                self.company.outcome = Some(GameOutcome::Victory);
-                self.push_event(SimEvent::GameWon);
-            }
-            return;
-        }
-
-        if self.clock.sim_seconds > contract.deadline_sim_seconds {
-            let id = contract.template_id.clone();
-            // Clawback: the advance goes back with an extra reputation hit.
-            let advance = contract.advance_paid_usd;
-            let mut penalty = self.company.failure_rep_penalty();
-            if advance > 0.0 {
-                self.company.cash_usd -= advance;
-                penalty += 5.0;
-            }
-            self.company.reputation = (self.company.reputation - penalty).max(0.0);
-            self.push_event(SimEvent::ContractFailed { contract_id: id });
-            self.push_event(SimEvent::ReputationChanged {
-                delta: -penalty,
-                new_value: self.company.reputation,
-            });
-            self.company.active_contract = None;
-            if self.company.game_mode == GameMode::Campaign
-                && self.company.outcome.is_none()
-                && self.company.reputation <= 0.0
-            {
-                self.company.outcome = Some(GameOutcome::ReputationLost);
-                self.push_event(SimEvent::GameOver {
-                    reason: GameOutcome::ReputationLost,
+                self.push_event(SimEvent::ReputationChanged {
+                    delta: rep,
+                    new_value: self.company.reputation,
                 });
+
+                // Program milestone: every contract of the body done once.
+                if self.company.game_mode == GameMode::Campaign
+                    && let Some(program) = self.content.program_for_body(&body_id).cloned()
+                    && !self.company.completed_programs.contains(&program.id)
+                    && self
+                        .company
+                        .program_contracts_complete(&self.content, &body_id)
+                {
+                    self.company.completed_programs.push(program.id.clone());
+                    self.company.cash_usd += program.completion_grant_usd;
+                    self.push_event(SimEvent::ProgramCompleted {
+                        program_id: program.id,
+                        grant_usd: program.completion_grant_usd,
+                    });
+                }
+                if self.company.game_mode == GameMode::Campaign
+                    && self.company.outcome.is_none()
+                    && self.company.all_contracts_completed(&self.content)
+                {
+                    self.company.outcome = Some(GameOutcome::Victory);
+                    self.push_event(SimEvent::GameWon);
+                }
+                continue; // slot i now holds the next contract
             }
+
+            if self.clock.sim_seconds > contract.deadline_sim_seconds {
+                let contract = self.company.active_contracts.remove(i);
+                let id = contract.template_id.clone();
+                // Clawback: the advance goes back with an extra reputation hit.
+                let advance = contract.advance_paid_usd;
+                let mut penalty = self.company.failure_rep_penalty();
+                if advance > 0.0 {
+                    self.company.cash_usd -= advance;
+                    penalty += 5.0;
+                }
+                self.company.reputation = (self.company.reputation - penalty).max(0.0);
+                self.push_event(SimEvent::ContractFailed { contract_id: id });
+                self.push_event(SimEvent::ReputationChanged {
+                    delta: -penalty,
+                    new_value: self.company.reputation,
+                });
+                if self.company.game_mode == GameMode::Campaign
+                    && self.company.outcome.is_none()
+                    && self.company.reputation <= 0.0
+                {
+                    self.company.outcome = Some(GameOutcome::ReputationLost);
+                    self.push_event(SimEvent::GameOver {
+                        reason: GameOutcome::ReputationLost,
+                    });
+                }
+                continue;
+            }
+            i += 1;
         }
     }
 
@@ -1103,13 +1283,18 @@ impl SimState {
         if self.company.game_mode != GameMode::Campaign || self.company.outcome.is_some() {
             return 0.0;
         }
-        let craft_cost = self.spacecraft.as_ref().map_or(0.0, |c| match c.phase {
-            CraftPhase::OnOrbit => c.bus.ops_cost_usd_per_day,
+        let fleet_cost: f64 = self.fleet.iter().map(Self::craft_ops_raw_usd_per_day).sum();
+        (BASE_OVERHEAD_USD_PER_DAY + fleet_cost) * self.company.ops_cost_multiplier
+    }
+
+    /// One craft's raw daily ops (before the company multiplier).
+    fn craft_ops_raw_usd_per_day(craft: &Spacecraft) -> f64 {
+        match craft.phase {
+            CraftPhase::OnOrbit => craft.bus.ops_cost_usd_per_day,
             // Hibernated cruise: a skeleton crew on console.
-            CraftPhase::Transfer => c.bus.ops_cost_usd_per_day * HIBERNATION_OPS_FRACTION,
+            CraftPhase::Transfer => craft.bus.ops_cost_usd_per_day * HIBERNATION_OPS_FRACTION,
             CraftPhase::Design => 0.0,
-        });
-        (BASE_OVERHEAD_USD_PER_DAY + craft_cost) * self.company.ops_cost_multiplier
+        }
     }
 
     /// Dropping the return value loses the events permanently.
@@ -1138,7 +1323,126 @@ impl SimState {
     pub fn snapshot(&self) -> Snapshot {
         let game_phase = self.derive_game_phase();
         let marketplace = self.company.marketplace(&self.content);
-        let craft_body = self.craft_body();
+        let now = self.clock.sim_seconds;
+
+        let spacecraft: Vec<SpacecraftSnapshot> = self
+            .fleet
+            .iter()
+            .map(|craft| self.craft_snapshot(craft))
+            .collect();
+
+        // Static station facts only: craft-relative geometry lives in each
+        // SpacecraftSnapshot's station_status.
+        let ground_stations: Vec<StationSnapshot> = self
+            .ground_stations
+            .iter()
+            .map(|station| StationSnapshot {
+                id: station.id.clone(),
+                name: station.name.clone(),
+                latitude_deg: station.latitude_deg,
+                longitude_deg: station.longitude_deg,
+                bandwidth_mbps: station.bandwidth_mbps,
+                body_id: station.body_id.clone(),
+                dsn: station.dsn,
+            })
+            .collect();
+
+        let active_contracts: Vec<ActiveContractSnapshot> = self
+            .company
+            .active_contracts
+            .iter()
+            .map(|c| {
+                let orbit_ok = c.assigned_craft_id.and_then(|id| {
+                    let craft = self.fleet.iter().find(|k| k.id == id)?;
+                    let radius = self.craft_body_of(craft).radius_km;
+                    craft
+                        .elements
+                        .map(|e| c.body_id == craft.body_id && c.orbit_ok(&e, radius))
+                });
+                ActiveContractSnapshot {
+                    contract: c.clone(),
+                    orbit_ok,
+                }
+            })
+            .collect();
+        let _ = now;
+
+        let bodies: Vec<BodySnapshot> = (0..self.bodies.len())
+            .map(|i| {
+                let b = self.bodies.body(i);
+                BodySnapshot {
+                    id: b.id.clone(),
+                    name: b.name.clone(),
+                    parent_id: b.parent.map(|p| self.bodies.body(p).id.clone()),
+                    radius_km: b.radius_km,
+                    rotation_rad_s: b.rotation_rad_s,
+                    position_helio_km: self
+                        .bodies
+                        .heliocentric_position_km(i, self.clock.sim_seconds),
+                    position_parent_km: self
+                        .bodies
+                        .parent_relative_position_km(i, self.clock.sim_seconds),
+                    sun_direction: self.bodies.sun_direction_from(i, self.clock.sim_seconds),
+                    soi_radius_km: b.soi_radius_km.is_finite().then_some(b.soi_radius_km),
+                    texture: b.texture.clone(),
+                }
+            })
+            .collect();
+
+        Snapshot {
+            bodies,
+            epoch_utc: self.content.epoch_utc.clone(),
+            sim_seconds: self.clock.sim_seconds,
+            sim_days: self.clock.sim_days(),
+            time_accel: self.clock.time_accel,
+            tick: self.clock.tick,
+            company_name: self.company.name.clone(),
+            cash_usd: self.company.cash_usd,
+            reputation: self.company.reputation,
+            game_mode: self.company.game_mode,
+            unlocked_tech: self.company.unlocked_tech.clone(),
+            unlocked_buses: self.company.unlocked_buses.clone(),
+            marketplace,
+            active_contracts,
+            spacecraft,
+            ground_stations,
+            reference_satellites: self.reference_satellites(),
+            phase: game_phase,
+            outcome: self.company.outcome,
+            ops_cost_usd_per_day: self.current_ops_cost_usd_per_day(),
+            transfers_unlocked: self.transfers_unlocked(),
+            programs: self
+                .content
+                .programs
+                .iter()
+                .map(|p| ProgramSnapshot {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    body_id: p.body_id.clone(),
+                    buyin_usd: p.buyin_usd,
+                    reputation_required: p.reputation_required,
+                    requires_keystone: p.requires_keystone.clone(),
+                    keystone_done: p
+                        .requires_keystone
+                        .as_ref()
+                        .is_none_or(|k| self.company.completed_contracts.contains(k)),
+                    requires_tech: p.requires_tech.clone(),
+                    tech_done: p
+                        .requires_tech
+                        .as_ref()
+                        .is_none_or(|t| self.company.unlocked_tech.contains(t)),
+                    unlocked: self.company.unlocked_programs.contains(&p.id),
+                    completed: self.company.completed_programs.contains(&p.id),
+                    completion_grant_usd: p.completion_grant_usd,
+                })
+                .collect(),
+        }
+    }
+
+    /// One craft's snapshot: mechanical transcription of the old
+    /// single-craft builder, with per-craft station geometry attached.
+    fn craft_snapshot(&self, craft: &Spacecraft) -> SpacecraftSnapshot {
+        let craft_body = self.craft_body_of(craft);
         let craft_body_idx = self.bodies.idx(&craft_body.id).expect("validated body id");
         let sun_dir = self
             .bodies
@@ -1153,152 +1457,42 @@ impl SimState {
             }
         };
 
-        let spacecraft = self.spacecraft.as_ref().map(|craft| {
-            let (position, velocity, trail, in_pass, sunlight) = if let Some(elements) =
-                craft.elements
-            {
-                let mu = craft_body.mu_km3_s2;
-                let eci = eci_position_km(mu, &elements, self.clock.sim_seconds);
-                let vel = eci_velocity_km_s(mu, &elements, self.clock.sim_seconds);
-                let trail = orbit_trail_samples(mu, &elements, self.clock.sim_seconds, 128);
-                let ecef = eci_to_ecef_km(craft_body.rotation_rad_s, eci, self.clock.sim_seconds);
-                let los = earth_los_now(&elements);
-                let in_pass = self.ground_stations.iter().any(|s| {
-                    if s.body_id == craft_body.id {
-                        is_in_pass(
-                            craft_body.radius_km,
-                            s.latitude_deg,
-                            s.longitude_deg,
-                            s.min_elevation_deg,
-                            ecef,
-                        )
-                    } else {
-                        s.dsn && los
-                    }
-                });
-                let sunlight = in_sunlight(eci, sun_dir, craft_body.radius_km);
-                (eci, vel, trail, in_pass, sunlight)
-            } else {
-                ([0.0; 3], [0.0; 3], vec![], false, true)
-            };
-
-            let apsis = craft.elements.is_some_and(|_| at_apsis(position, velocity));
-            let (seconds_to_perigee, seconds_to_apogee) = craft
-                .elements
-                .filter(|_| craft.phase == CraftPhase::OnOrbit)
-                .map_or((None, None), |e| {
-                    let (p, a) =
-                        seconds_to_apsides(craft_body.mu_km3_s2, &e, self.clock.sim_seconds);
-                    (Some(p), Some(a))
-                });
-            let hohmann_preview =
-                if craft.phase == CraftPhase::OnOrbit && craft.pending_hohmann.is_none() {
-                    preview_hohmann(craft_body, craft, craft.maneuver_target_altitude_km)
-                        .ok()
-                        .map(|p| HohmannPlanSnapshot::from(&p))
+        let (position, velocity, trail, in_pass, sunlight) = if let Some(elements) = craft.elements
+        {
+            let mu = craft_body.mu_km3_s2;
+            let eci = eci_position_km(mu, &elements, self.clock.sim_seconds);
+            let vel = eci_velocity_km_s(mu, &elements, self.clock.sim_seconds);
+            let trail = orbit_trail_samples(mu, &elements, self.clock.sim_seconds, 128);
+            let ecef = eci_to_ecef_km(craft_body.rotation_rad_s, eci, self.clock.sim_seconds);
+            let los = earth_los_now(&elements);
+            let in_pass = self.ground_stations.iter().any(|s| {
+                if s.body_id == craft_body.id {
+                    is_in_pass(
+                        craft_body.radius_km,
+                        s.latitude_deg,
+                        s.longitude_deg,
+                        s.min_elevation_deg,
+                        ecef,
+                    )
                 } else {
-                    None
-                };
+                    s.dsn && los
+                }
+            });
+            let sunlight = in_sunlight(eci, sun_dir, craft_body.radius_km);
+            (eci, vel, trail, in_pass, sunlight)
+        } else {
+            ([0.0; 3], [0.0; 3], vec![], false, true)
+        };
 
-            let (anomaly_type, anomaly_label) =
-                craft.active_anomaly.as_ref().map_or((None, None), |a| {
-                    (Some(a.kind), Some(a.label().to_string()))
-                });
-
-            SpacecraftSnapshot {
-                name: craft.name.clone(),
-                bus_id: craft.bus_id.clone(),
-                bus_name: craft.bus.name.clone(),
-                phase: craft.phase,
-                body_id: craft.body_id.clone(),
-                position_eci_km: position,
-                velocity_eci_km_s: velocity,
-                elements: craft.elements,
-                orbit_trail_km: trail,
-                power_wh: craft.power_wh,
-                battery_wh_capacity: craft.bus.battery_wh,
-                buffer_mb: craft.buffer_mb,
-                buffer_capacity_mb: craft.max_buffer_mb(),
-                downlink_active: craft.downlink_active,
-                in_sunlight: sunlight,
-                in_pass,
-                downlink_rate_mb_s: craft.downlink_rate_mb_s(
-                    self.company.comms_multiplier,
-                    craft
-                        .downlink_station_id
-                        .as_ref()
-                        .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                        .map(|s| {
-                            Self::station_bandwidth_for(
-                                s,
-                                craft_body,
-                                self.company.deep_space_comms_multiplier,
-                            )
-                        }),
-                    self.clock.sim_seconds,
-                ),
-                imaging_rate_mb_s: craft.imaging_rate_mb_s(sunlight, self.clock.sim_seconds),
-                target_altitude_km: craft.target_altitude_km,
-                target_inclination_deg: craft.target_inclination_deg,
-                altitude_km: craft
-                    .current_altitude_km(craft_body.radius_km)
-                    .unwrap_or(0.0),
-                propellant_kg: craft.propellant_kg,
-                propellant_capacity_kg: craft.bus.propellant_kg,
-                delta_v_remaining_km_s: craft.delta_v_remaining_km_s(self.company.isp_multiplier),
-                total_delta_v_used_km_s: craft.total_delta_v_used_km_s,
-                pending_hohmann: craft.pending_hohmann.clone(),
-                at_apsis: apsis,
-                seconds_to_perigee,
-                seconds_to_apogee,
-                hohmann_preview,
-                maneuver_target_altitude_km: craft.maneuver_target_altitude_km,
-                payload_mode: craft.payload_mode,
-                downlink_station_id: craft.downlink_station_id.clone(),
-                command_queue: craft.command_queue.clone(),
-                active_anomaly: anomaly_type,
-                anomaly_label,
-                transfer: craft.transfer.as_ref().map(|t| {
-                    let span = (t.arrival_sim_seconds - t.departure_sim_seconds).max(1.0);
-                    TransferSnapshot {
-                        origin_body_id: t.origin_body_id.clone(),
-                        target_body_id: t.target_body_id.clone(),
-                        frame_body_id: t.frame_body_id.clone(),
-                        departure_sim_seconds: t.departure_sim_seconds,
-                        arrival_sim_seconds: t.arrival_sim_seconds,
-                        progress: ((self.clock.sim_seconds - t.departure_sim_seconds) / span)
-                            .clamp(0.0, 1.0),
-                        capture_dv_km_s: t.capture_dv_km_s,
-                    }
-                }),
-                transfer_planner: self.transfer_planner_snapshot(craft),
-                light_delay_seconds: {
-                    const C_KM_S: f64 = 299_792.458;
-                    let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
-                    let e = self
-                        .bodies
-                        .heliocentric_position_km(earth_idx, self.clock.sim_seconds);
-                    let b = self
-                        .bodies
-                        .heliocentric_position_km(craft_body_idx, self.clock.sim_seconds);
-                    let craft_helio = [b[0] + position[0], b[1] + position[1], b[2] + position[2]];
-                    let d = [
-                        craft_helio[0] - e[0],
-                        craft_helio[1] - e[1],
-                        craft_helio[2] - e[2],
-                    ];
-                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_KM_S
-                },
-            }
-        });
-
-        let ground_stations: Vec<StationSnapshot> = self
+        // Per-craft station geometry (reachable stations only).
+        let station_status: Vec<CraftStationStatus> = self
             .ground_stations
             .iter()
+            .filter(|st| Self::station_reachable(st, &craft_body.id))
             .map(|station| {
                 let local = station.body_id == craft_body.id;
                 let deep_space = station.dsn && !local && craft_body.id != "earth";
-                let elements = self.spacecraft.as_ref().and_then(|c| c.elements);
+                let elements = craft.elements;
                 let elevation = match (local, elements) {
                     (true, Some(elements)) => {
                         let eci = eci_position_km(
@@ -1350,103 +1544,130 @@ impl SimState {
                 } else {
                     None
                 };
-                StationSnapshot {
-                    id: station.id.clone(),
-                    name: station.name.clone(),
-                    latitude_deg: station.latitude_deg,
-                    longitude_deg: station.longitude_deg,
+                CraftStationStatus {
+                    station_id: station.id.clone(),
                     elevation_deg: elevation,
                     in_pass,
+                    next_pass_in_seconds,
                     bandwidth_mbps: Self::station_bandwidth_for(
                         station,
                         craft_body,
                         self.company.deep_space_comms_multiplier,
                     ),
-                    next_pass_in_seconds,
-                    body_id: station.body_id.clone(),
-                    dsn: station.dsn,
                 }
             })
             .collect();
 
-        let active_contract_orbit_ok = self.company.active_contract.as_ref().and_then(|c| {
-            self.spacecraft.as_ref().and_then(|craft| {
+        let apsis = craft.elements.is_some_and(|_| at_apsis(position, velocity));
+        let (seconds_to_perigee, seconds_to_apogee) = craft
+            .elements
+            .filter(|_| craft.phase == CraftPhase::OnOrbit)
+            .map_or((None, None), |e| {
+                let (p, a) = seconds_to_apsides(craft_body.mu_km3_s2, &e, self.clock.sim_seconds);
+                (Some(p), Some(a))
+            });
+        let hohmann_preview =
+            if craft.phase == CraftPhase::OnOrbit && craft.pending_hohmann.is_none() {
+                preview_hohmann(craft_body, craft, craft.maneuver_target_altitude_km)
+                    .ok()
+                    .map(|p| HohmannPlanSnapshot::from(&p))
+            } else {
+                None
+            };
+
+        let (anomaly_type, anomaly_label) =
+            craft.active_anomaly.as_ref().map_or((None, None), |a| {
+                (Some(a.kind), Some(a.label().to_string()))
+            });
+
+        SpacecraftSnapshot {
+            id: craft.id,
+            name: craft.name.clone(),
+            bus_id: craft.bus_id.clone(),
+            bus_name: craft.bus.name.clone(),
+            phase: craft.phase,
+            body_id: craft.body_id.clone(),
+            position_eci_km: position,
+            velocity_eci_km_s: velocity,
+            elements: craft.elements,
+            orbit_trail_km: trail,
+            power_wh: craft.power_wh,
+            battery_wh_capacity: craft.bus.battery_wh,
+            buffer_mb: craft.buffer_mb,
+            buffer_capacity_mb: craft.max_buffer_mb(),
+            downlink_active: craft.downlink_active,
+            in_sunlight: sunlight,
+            in_pass,
+            downlink_rate_mb_s: craft.downlink_rate_mb_s(
+                self.company.comms_multiplier,
                 craft
-                    .elements
-                    .map(|e| c.body_id == craft.body_id && c.orbit_ok(&e, craft_body.radius_km))
-            })
-        });
-
-        let bodies: Vec<BodySnapshot> = (0..self.bodies.len())
-            .map(|i| {
-                let b = self.bodies.body(i);
-                BodySnapshot {
-                    id: b.id.clone(),
-                    name: b.name.clone(),
-                    parent_id: b.parent.map(|p| self.bodies.body(p).id.clone()),
-                    radius_km: b.radius_km,
-                    rotation_rad_s: b.rotation_rad_s,
-                    position_helio_km: self
-                        .bodies
-                        .heliocentric_position_km(i, self.clock.sim_seconds),
-                    position_parent_km: self
-                        .bodies
-                        .parent_relative_position_km(i, self.clock.sim_seconds),
-                    sun_direction: self.bodies.sun_direction_from(i, self.clock.sim_seconds),
-                    soi_radius_km: b.soi_radius_km.is_finite().then_some(b.soi_radius_km),
-                    texture: b.texture.clone(),
+                    .downlink_station_id
+                    .as_ref()
+                    .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
+                    .map(|s| {
+                        Self::station_bandwidth_for(
+                            s,
+                            craft_body,
+                            self.company.deep_space_comms_multiplier,
+                        )
+                    }),
+                self.clock.sim_seconds,
+            ),
+            imaging_rate_mb_s: craft.imaging_rate_mb_s(sunlight, self.clock.sim_seconds),
+            target_altitude_km: craft.target_altitude_km,
+            target_inclination_deg: craft.target_inclination_deg,
+            altitude_km: craft
+                .current_altitude_km(craft_body.radius_km)
+                .unwrap_or(0.0),
+            propellant_kg: craft.propellant_kg,
+            propellant_capacity_kg: craft.bus.propellant_kg,
+            delta_v_remaining_km_s: craft.delta_v_remaining_km_s(self.company.isp_multiplier),
+            total_delta_v_used_km_s: craft.total_delta_v_used_km_s,
+            pending_hohmann: craft.pending_hohmann.clone(),
+            at_apsis: apsis,
+            seconds_to_perigee,
+            seconds_to_apogee,
+            hohmann_preview,
+            maneuver_target_altitude_km: craft.maneuver_target_altitude_km,
+            payload_mode: craft.payload_mode,
+            downlink_station_id: craft.downlink_station_id.clone(),
+            command_queue: craft.command_queue.clone(),
+            active_anomaly: anomaly_type,
+            anomaly_label,
+            transfer: craft.transfer.as_ref().map(|t| {
+                let span = (t.arrival_sim_seconds - t.departure_sim_seconds).max(1.0);
+                TransferSnapshot {
+                    origin_body_id: t.origin_body_id.clone(),
+                    target_body_id: t.target_body_id.clone(),
+                    frame_body_id: t.frame_body_id.clone(),
+                    departure_sim_seconds: t.departure_sim_seconds,
+                    arrival_sim_seconds: t.arrival_sim_seconds,
+                    progress: ((self.clock.sim_seconds - t.departure_sim_seconds) / span)
+                        .clamp(0.0, 1.0),
+                    capture_dv_km_s: t.capture_dv_km_s,
                 }
-            })
-            .collect();
-
-        Snapshot {
-            bodies,
-            epoch_utc: self.content.epoch_utc.clone(),
-            sim_seconds: self.clock.sim_seconds,
-            sim_days: self.clock.sim_days(),
-            time_accel: self.clock.time_accel,
-            tick: self.clock.tick,
-            company_name: self.company.name.clone(),
-            cash_usd: self.company.cash_usd,
-            reputation: self.company.reputation,
-            game_mode: self.company.game_mode,
-            unlocked_tech: self.company.unlocked_tech.clone(),
-            unlocked_buses: self.company.unlocked_buses.clone(),
-            marketplace,
-            active_contract: self.company.active_contract.clone(),
-            active_contract_orbit_ok,
-            spacecraft,
-            ground_stations,
-            reference_satellites: self.reference_satellites(),
-            phase: game_phase,
-            outcome: self.company.outcome,
-            ops_cost_usd_per_day: self.current_ops_cost_usd_per_day(),
-            transfers_unlocked: self.transfers_unlocked(),
-            programs: self
-                .content
-                .programs
-                .iter()
-                .map(|p| ProgramSnapshot {
-                    id: p.id.clone(),
-                    name: p.name.clone(),
-                    body_id: p.body_id.clone(),
-                    buyin_usd: p.buyin_usd,
-                    reputation_required: p.reputation_required,
-                    requires_keystone: p.requires_keystone.clone(),
-                    keystone_done: p
-                        .requires_keystone
-                        .as_ref()
-                        .is_none_or(|k| self.company.completed_contracts.contains(k)),
-                    requires_tech: p.requires_tech.clone(),
-                    tech_done: p
-                        .requires_tech
-                        .as_ref()
-                        .is_none_or(|t| self.company.unlocked_tech.contains(t)),
-                    unlocked: self.company.unlocked_programs.contains(&p.id),
-                    completed: self.company.completed_programs.contains(&p.id),
-                    completion_grant_usd: p.completion_grant_usd,
-                })
-                .collect(),
+            }),
+            transfer_planner: self.transfer_planner_snapshot(craft),
+            ops_cost_usd_per_day: Self::craft_ops_raw_usd_per_day(craft)
+                * self.company.ops_cost_multiplier,
+            station_status,
+            light_delay_seconds: {
+                const C_KM_S: f64 = 299_792.458;
+                let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
+                let e = self
+                    .bodies
+                    .heliocentric_position_km(earth_idx, self.clock.sim_seconds);
+                let b = self
+                    .bodies
+                    .heliocentric_position_km(craft_body_idx, self.clock.sim_seconds);
+                let craft_helio = [b[0] + position[0], b[1] + position[1], b[2] + position[2]];
+                let d = [
+                    craft_helio[0] - e[0],
+                    craft_helio[1] - e[1],
+                    craft_helio[2] - e[2],
+                ];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_KM_S
+            },
         }
     }
 
@@ -1541,37 +1762,28 @@ impl SimState {
             }
             None => {}
         }
-        match self.spacecraft.as_ref().map(|s| &s.phase) {
-            None => GamePhase::Design,
-            Some(CraftPhase::Design) => {
-                if self.company.active_contract.is_some() {
-                    GamePhase::AwaitingLaunch
-                } else {
-                    GamePhase::Design
-                }
-            }
-            Some(CraftPhase::Transfer) => GamePhase::InTransit,
-            Some(CraftPhase::OnOrbit) => {
-                if self.company.active_contract.is_none()
-                    && !self.company.completed_contracts.is_empty()
-                {
-                    GamePhase::ContractComplete
-                } else {
-                    GamePhase::OnOrbit
-                }
-            }
+        // Coarse company-level phase for HUD routing only; prefer the
+        // per-craft phases in the fleet snapshot.
+        if self.fleet.is_empty() {
+            return GamePhase::Design;
         }
-    }
-
-    fn spacecraft_mut(&mut self, required: CraftPhase) -> Result<&mut Spacecraft, SimError> {
-        let craft = self
-            .spacecraft
-            .as_mut()
-            .ok_or_else(|| SimError::InvalidAction("no spacecraft".into()))?;
-        if craft.phase != required {
-            return Err(SimError::WrongPhase);
+        if self.fleet.iter().any(|c| c.phase == CraftPhase::Design) {
+            return if self.company.active_contracts.is_empty() {
+                GamePhase::Design
+            } else {
+                GamePhase::AwaitingLaunch
+            };
         }
-        Ok(craft)
+        if self.fleet.iter().any(|c| c.phase == CraftPhase::OnOrbit) {
+            return if self.company.active_contracts.is_empty()
+                && !self.company.completed_contracts.is_empty()
+            {
+                GamePhase::ContractComplete
+            } else {
+                GamePhase::OnOrbit
+            };
+        }
+        GamePhase::InTransit
     }
 
     fn push_event(&mut self, event: SimEvent) {

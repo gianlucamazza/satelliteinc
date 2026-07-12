@@ -35,6 +35,8 @@ export interface ActiveContract {
   stations_used: string[];
   /** Body whose orbit fulfills this contract. */
   body_id: string;
+  /** Craft serving this contract (1:1); null = unassigned, no accrual. */
+  assigned_craft_id: number | null;
   advance_paid_usd: number;
   min_on_station_days: number;
   on_station_seconds: number;
@@ -102,7 +104,24 @@ export interface BodySnapshot {
   texture: string | null;
 }
 
+/** Active contract flattened with its assigned craft's orbit compliance. */
+export type ActiveContractSnapshot = ActiveContract & {
+  orbit_ok: boolean | null;
+};
+
+/** Craft-relative station geometry (reachable stations only). */
+export interface CraftStationStatus {
+  station_id: string;
+  elevation_deg: number;
+  in_pass: boolean;
+  next_pass_in_seconds: number | null;
+  /** Effective link bandwidth for this craft (DSN-scaled). */
+  bandwidth_mbps: number;
+}
+
 export interface SpacecraftSnapshot {
+  /** Stable fleet id. */
+  id: number;
   name: string;
   bus_id: string;
   bus_name: string;
@@ -142,6 +161,9 @@ export interface SpacecraftSnapshot {
   anomaly_label: string | null;
   /** One-way light time to Earth (flavor; ~0 in Earth orbit). */
   light_delay_seconds: number;
+  /** This craft's daily ops line (company multiplier applied). */
+  ops_cost_usd_per_day: number;
+  station_status: CraftStationStatus[];
   /** Cruise in progress (null on orbit / in design). */
   transfer: TransferSnapshot | null;
   /** Planner readout for the selected destination (OnOrbit only). */
@@ -179,11 +201,8 @@ export interface StationSnapshot {
   name: string;
   latitude_deg: number;
   longitude_deg: number;
-  elevation_deg: number;
-  in_pass: boolean;
-  /** Effective link bandwidth for the current craft (DSN-scaled). */
+  /** Base dish bandwidth (craft-effective rates live in station_status). */
   bandwidth_mbps: number;
-  next_pass_in_seconds: number | null;
   body_id: string;
   dsn: boolean;
 }
@@ -203,9 +222,8 @@ export interface Snapshot {
   unlocked_tech: string[];
   unlocked_buses: string[];
   marketplace: ContractOffer[];
-  active_contract: ActiveContract | null;
-  active_contract_orbit_ok: boolean | null;
-  spacecraft: SpacecraftSnapshot | null;
+  active_contracts: ActiveContractSnapshot[];
+  spacecraft: SpacecraftSnapshot[];
   ground_stations: StationSnapshot[];
   reference_satellites: ReferenceSatellite[];
   phase: GamePhase;
@@ -316,15 +334,27 @@ export interface GameContent {
 
 /** Mirrors the Rust `SimEvent` enum (`#[serde(tag = "type", rename_all = "snake_case")]`). */
 export type SimEvent =
-  | { type: "pass_started"; station_id: string; station_name: string }
-  | { type: "pass_ended"; station_id: string }
+  | {
+      type: "pass_started";
+      craft_id: number;
+      station_id: string;
+      station_name: string;
+    }
+  | { type: "pass_ended"; craft_id: number; station_id: string }
   | { type: "contract_completed"; contract_id: string; payout_usd: number }
   | { type: "contract_failed"; contract_id: string }
-  | { type: "launched"; altitude_km: number; inclination_deg: number }
+  | {
+      type: "launched";
+      craft_id: number;
+      craft_name: string;
+      altitude_km: number;
+      inclination_deg: number;
+    }
   | { type: "insufficient_funds"; required_usd: number }
   | { type: "action_applied"; message: string }
   | {
       type: "maneuver_executed";
+      craft_id: number;
       delta_v_km_s: number;
       propellant_used_kg: number;
       new_altitude_km: number | null;
@@ -332,32 +362,49 @@ export type SimEvent =
     }
   | {
       type: "hohmann_burn1_complete";
+      craft_id: number;
       delta_v_km_s: number;
       target_altitude_km: number;
     }
-  | { type: "hohmann_transfer_complete"; target_altitude_km: number }
+  | {
+      type: "hohmann_transfer_complete";
+      craft_id: number;
+      target_altitude_km: number;
+    }
   | {
       type: "transfer_started";
+      craft_id: number;
       target_body_id: string;
       arrival_sim_seconds: number;
       injection_cost_usd: number;
     }
-  | { type: "transfer_arrived"; body_id: string }
-  | { type: "capture_executed"; delta_v_km_s: number }
+  | { type: "transfer_arrived"; craft_id: number; body_id: string }
+  | { type: "capture_executed"; craft_id: number; delta_v_km_s: number }
   | { type: "warp_completed"; seconds: number }
   | { type: "program_unlocked"; program_id: string }
   | { type: "program_completed"; program_id: string; grant_usd: number }
-  | { type: "anomaly_started"; kind: string; label: string }
-  | { type: "anomaly_cleared"; kind: string }
+  | {
+      type: "contract_assignment_changed";
+      contract_id: string;
+      craft_id: number | null;
+    }
+  | { type: "anomaly_started"; craft_id: number; kind: string; label: string }
+  | { type: "anomaly_cleared"; craft_id: number; kind: string }
   | {
       type: "command_executed";
+      craft_id: number;
       command: string;
       station_name: string;
       message: string;
     }
   | { type: "tech_purchased"; tech_id: string; name: string }
   | { type: "reputation_changed"; delta: number; new_value: number }
-  | { type: "decommissioned"; salvage_usd: number }
+  | {
+      type: "decommissioned";
+      craft_id: number;
+      craft_name: string;
+      salvage_usd: number;
+    }
   | { type: "game_won" }
   | { type: "game_over"; reason: GameOutcome }
   | { type: "cash_negative"; cash_usd: number };

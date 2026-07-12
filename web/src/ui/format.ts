@@ -27,11 +27,16 @@ export function contractProgress(contract: ActiveContract): number {
 export function nextPassStation(
   s: Snapshot,
 ): { name: string; elevation: number } | null {
-  const best = s.ground_stations
+  const craft = s.spacecraft[0] ?? null;
+  if (!craft) return null;
+  const best = craft.station_status
     .filter((st) => !st.in_pass && st.elevation_deg >= 0)
     .sort((a, b) => b.elevation_deg - a.elevation_deg)[0];
   if (!best) return null;
-  return { name: best.name, elevation: best.elevation_deg };
+  const name =
+    s.ground_stations.find((g) => g.id === best.station_id)?.name ??
+    best.station_id;
+  return { name, elevation: best.elevation_deg };
 }
 
 export function payloadModeLabel(mode: string): string {
@@ -78,9 +83,9 @@ export interface DataFlowStatus {
 
 /** One-line diagnosis of why contract data is (or isn't) flowing. */
 export function dataFlowStatus(s: Snapshot): DataFlowStatus | null {
-  const craft = s.spacecraft;
+  const craft = s.spacecraft[0] ?? null;
   if (craft?.phase !== "OnOrbit") return null;
-  if (s.active_contract && s.active_contract_orbit_ok === false) {
+  if (s.active_contracts[0]?.orbit_ok === false) {
     return { text: "Orbit out of spec — data not accepted", kind: "bad" };
   }
   if (!craft.downlink_active) {
@@ -95,7 +100,7 @@ export function dataFlowStatus(s: Snapshot): DataFlowStatus | null {
     return { text: "Downlink off — buffer filling", kind: "warn" };
   }
   if (!craft.in_pass) {
-    const next = s.ground_stations
+    const next = craft.station_status
       .map((st) => st.next_pass_in_seconds)
       .filter((v): v is number => v != null)
       .sort((a, b) => a - b)[0];

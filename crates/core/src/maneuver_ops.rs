@@ -51,6 +51,7 @@ pub fn execute_prograde_burn(
         delta_v_km_s,
         new_altitude_km: Some(alt),
         events: vec![SimEvent::ManeuverExecuted {
+            craft_id: craft.id,
             delta_v_km_s,
             propellant_used_kg: prop_used,
             new_altitude_km: Some(alt),
@@ -133,10 +134,12 @@ pub fn start_hohmann(
         new_altitude_km: None,
         events: vec![
             SimEvent::HohmannBurn1Complete {
+                craft_id: craft.id,
                 delta_v_km_s: plan.burn1_dv_km_s,
                 target_altitude_km,
             },
             SimEvent::ManeuverExecuted {
+                craft_id: craft.id,
                 delta_v_km_s: plan.burn1_dv_km_s,
                 propellant_used_kg: prop_used,
                 new_altitude_km: None,
@@ -195,9 +198,11 @@ pub fn complete_hohmann(
         new_altitude_km: Some(alt),
         events: vec![
             SimEvent::HohmannTransferComplete {
+                craft_id: craft.id,
                 target_altitude_km: plan.target_altitude_km,
             },
             SimEvent::ManeuverExecuted {
+                craft_id: craft.id,
                 delta_v_km_s: plan.burn2_dv_km_s,
                 propellant_used_kg: prop_used,
                 new_altitude_km: Some(alt),

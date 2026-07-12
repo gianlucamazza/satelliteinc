@@ -43,7 +43,7 @@ fn jupiter_capture_fits_the_pioneer_tanks() {
 fn rtg_keeps_power_positive_in_eclipse() {
     let content = load_content();
     let pioneer = content.bus("pioneer").unwrap();
-    let craft = satelliteinc_core::spacecraft::Spacecraft::new_from_bus(pioneer, "Pioneer");
+    let craft = satelliteinc_core::spacecraft::Spacecraft::new_from_bus(pioneer, "Pioneer", 0);
     // In darkness the RTG still outruns the idle payload draw.
     let balance_dark = craft.power_balance_w(false, 1.0, 0.0, 1.0);
     assert!(
@@ -52,7 +52,7 @@ fn rtg_keeps_power_positive_in_eclipse() {
     );
     // A solar bus in the same darkness drains.
     let explorer = content.bus("explorer").unwrap();
-    let solar_craft = satelliteinc_core::spacecraft::Spacecraft::new_from_bus(explorer, "Solar");
+    let solar_craft = satelliteinc_core::spacecraft::Spacecraft::new_from_bus(explorer, "Solar", 1);
     assert!(solar_craft.power_balance_w(false, 1.0, 0.0, 1.0) < 0.0);
 }
 
@@ -65,15 +65,17 @@ fn radiation_upset_wipes_a_fifth_of_the_buffer() {
         scenario_id: "sandbox_venus".into(),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     {
-        let craft = sim.spacecraft.as_mut().unwrap();
+        let now = sim.clock.sim_seconds;
+        let craft = common::only_craft_mut(&mut sim);
         craft.body_id = "jupiter".into();
         craft.elements = Some(satelliteinc_core::orbit::circular_orbit(
             69_911.0,
             1_500_000.0,
             10.0,
-            sim.clock.sim_seconds,
+            now,
         ));
         craft.buffer_mb = 1_000.0;
         craft.anomaly_cooldown_until = 0.0;
@@ -87,15 +89,15 @@ fn radiation_upset_wipes_a_fifth_of_the_buffer() {
     let mut wiped = None;
     for _ in 0..800 {
         sim.step(0.016);
-        let craft = sim.spacecraft.as_ref().unwrap();
+        let craft = common::only_craft(&sim);
         if let Some(a) = &craft.active_anomaly {
             if a.kind == satelliteinc_core::ops::AnomalyType::BufferCorruption {
                 wiped = Some((a.label().to_string(), craft.buffer_mb));
                 break;
             }
             // Clear other anomalies instantly to reach the corruption bucket.
-            sim.spacecraft.as_mut().unwrap().active_anomaly = None;
-            sim.spacecraft.as_mut().unwrap().anomaly_cooldown_until = 0.0;
+            common::only_craft_mut(&mut sim).active_anomaly = None;
+            common::only_craft_mut(&mut sim).anomaly_cooldown_until = 0.0;
         }
     }
     let (label, buffer_after) = wiped.expect("a radiation upset fires");

@@ -33,6 +33,9 @@ pub struct ActiveContract {
     /// Body whose orbit fulfills this contract.
     #[serde(default = "crate::content::default_body_id")]
     pub body_id: String,
+    /// Craft serving this contract (1:1); None = unassigned, no accrual.
+    #[serde(default)]
+    pub assigned_craft_id: Option<crate::spacecraft::CraftId>,
     /// Cash advanced on acceptance; clawed back on failure.
     #[serde(default)]
     pub advance_paid_usd: f64,
@@ -77,6 +80,7 @@ impl ActiveContract {
             min_distinct_stations: template.min_distinct_stations,
             stations_used: Vec::new(),
             body_id: template.body_id.clone(),
+            assigned_craft_id: None,
             advance_paid_usd: 0.0,
             min_on_station_days: template.min_on_station_days,
             on_station_seconds: 0.0,
@@ -149,7 +153,10 @@ pub struct CompanyState {
     pub game_mode: GameMode,
     pub unlocked_tech: Vec<String>,
     pub completed_contracts: Vec<String>,
-    pub active_contract: Option<ActiveContract>,
+    /// Concurrent contracts in acceptance order (v3 saves migrate the
+    /// single slot into a one-element vec).
+    #[serde(default)]
+    pub active_contracts: Vec<ActiveContract>,
     pub comms_multiplier: f64,
     pub solar_multiplier: f64,
     #[serde(default = "default_one")]
@@ -188,7 +195,7 @@ impl CompanyState {
             game_mode,
             unlocked_tech: Vec::new(),
             completed_contracts: Vec::new(),
-            active_contract: None,
+            active_contracts: Vec::new(),
             comms_multiplier: 1.0,
             solar_multiplier: 1.0,
             isp_multiplier: 1.0,
@@ -269,6 +276,14 @@ impl CompanyState {
                 )
             })
             .collect()
+    }
+
+    /// The active contract for a template id, if any.
+    #[must_use]
+    pub fn contract_by_template(&self, template_id: &str) -> Option<&ActiveContract> {
+        self.active_contracts
+            .iter()
+            .find(|c| c.template_id == template_id)
     }
 
     /// Completions of a contract so far (repeat payouts decay with this).

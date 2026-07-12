@@ -9,7 +9,7 @@ use common::load_content;
 fn craft_from(bus_id: &str) -> Spacecraft {
     let content = load_content();
     let bus = content.bus(bus_id).unwrap();
-    Spacecraft::new_from_bus(bus, "test")
+    Spacecraft::new_from_bus(bus, "test", 0)
 }
 
 #[test]
@@ -46,23 +46,24 @@ fn safe_mode_command_halves_anomaly_duration() {
     })
     .unwrap();
     sim.apply_action(PlayerAction::SetOrbit {
+        craft_id: 0,
         altitude_km: 400.0,
         inclination_deg: 97.0,
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
     sim.apply_action(PlayerAction::QueueCommand {
+        craft_id: 0,
         command: CommandType::SafeMode,
         station_id: "svalbard".into(),
     })
     .unwrap();
 
     // Long-lived anomaly that outlasts the wait for the pass.
-    let craft = sim.spacecraft.as_mut().unwrap();
-    craft.active_anomaly = Some(ActiveAnomaly::new(
-        AnomalyType::PowerGlitch,
-        sim.clock.sim_seconds,
-    ));
+    let now = sim.clock.sim_seconds;
+    let craft = common::only_craft_mut(&mut sim);
+    craft.active_anomaly = Some(ActiveAnomaly::new(AnomalyType::PowerGlitch, now));
     craft.active_anomaly.as_mut().unwrap().duration_seconds = 1_000_000.0;
 
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 500.0 })
@@ -80,10 +81,7 @@ fn safe_mode_command_halves_anomaly_duration() {
         }
     }
     assert!(command_ran, "safe-mode command should execute on pass");
-    let anomaly = sim
-        .spacecraft
-        .as_ref()
-        .unwrap()
+    let anomaly = common::only_craft(&sim)
         .active_anomaly
         .as_ref()
         .expect("anomaly still active");

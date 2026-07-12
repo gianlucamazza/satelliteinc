@@ -78,10 +78,11 @@ fn advance_pays_up_front_and_claws_back_on_failure() {
     .unwrap();
     // The tutorial pre-accepts moon_mapper WITHOUT an advance (scenario
     // seeding): drop it and re-accept through the marketplace instead.
-    sim.company.active_contract = None;
+    sim.company.active_contracts.clear();
     let cash_before = sim.company.cash_usd;
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "moon_mapper".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
     // 20% of 650k paid on acceptance.
@@ -90,15 +91,10 @@ fn advance_pays_up_front_and_claws_back_on_failure() {
 
     // Let the deadline lapse: clawback + extra reputation hit.
     let rep_before = sim.company.reputation;
-    let deadline = sim
-        .company
-        .active_contract
-        .as_ref()
-        .unwrap()
-        .deadline_sim_seconds;
+    let deadline = sim.company.active_contracts[0].deadline_sim_seconds;
     let cash_at_fail = sim.company.cash_usd;
     sim.clock.sim_seconds = deadline + 1.0;
-    sim.check_contract();
+    sim.check_contracts();
     assert!(
         (cash_at_fail - sim.company.cash_usd - 130_000.0).abs() < 1.0,
         "advance must be clawed back"
@@ -115,26 +111,27 @@ fn on_station_requirement_gates_completion() {
     })
     .unwrap();
     // Swap the pre-accepted contract for the presence-based one.
-    sim.company.active_contract = None;
+    sim.company.active_contracts.clear();
     sim.company.reputation = 150.0; // clear dust_storm_watch's gate
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "dust_storm_watch".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    if let Some(c) = sim.company.active_contract.as_mut() {
+    if let Some(c) = sim.company.active_contracts.first_mut() {
         // Data done, presence not: must NOT complete.
         c.downlink_mb_done = c.downlink_mb_required;
     }
-    sim.check_contract();
+    sim.check_contracts();
     assert!(
-        sim.company.active_contract.is_some(),
+        !sim.company.active_contracts.is_empty(),
         "30 on-station days still missing"
     );
-    if let Some(c) = sim.company.active_contract.as_mut() {
+    if let Some(c) = sim.company.active_contracts.first_mut() {
         c.on_station_seconds = 30.0 * 86_400.0;
     }
-    sim.check_contract();
-    assert!(sim.company.active_contract.is_none(), "now it completes");
+    sim.check_contracts();
+    assert!(sim.company.active_contracts.is_empty(), "now it completes");
 }
 
 #[test]
@@ -181,14 +178,15 @@ fn grand_victory_needs_every_program() {
     }
     sim.company.unlocked_programs.push("venus_program".into());
     // campaign_start pre-seeds earth_imaging as active: clear the slot.
-    sim.company.active_contract = None;
+    sim.company.active_contracts.clear();
 
     // Complete the last keystone through the normal flow.
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "venus_pathfinder".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    if let Some(c) = sim.company.active_contract.as_mut() {
+    if let Some(c) = sim.company.active_contracts.first_mut() {
         c.downlink_mb_done = c.downlink_mb_required;
         c.stations_used = vec![
             "goldstone".into(),
@@ -196,7 +194,7 @@ fn grand_victory_needs_every_program() {
             "canberra_dsn".into(),
         ];
     }
-    sim.check_contract();
+    sim.check_contracts();
 
     let events = sim.drain_events();
     assert!(events.iter().any(|e| matches!(

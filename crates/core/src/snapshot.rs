@@ -23,11 +23,9 @@ pub struct Snapshot {
     pub unlocked_tech: Vec<String>,
     pub unlocked_buses: Vec<String>,
     pub marketplace: Vec<ContractOffer>,
-    pub active_contract: Option<ActiveContract>,
-    /// Whether the current orbit satisfies the active contract's requirements
-    /// (None when there is no contract or no orbit).
-    pub active_contract_orbit_ok: Option<bool>,
-    pub spacecraft: Option<SpacecraftSnapshot>,
+    /// Concurrent contracts with their per-assignment orbit compliance.
+    pub active_contracts: Vec<ActiveContractSnapshot>,
+    pub spacecraft: Vec<SpacecraftSnapshot>,
     pub ground_stations: Vec<StationSnapshot>,
     pub reference_satellites: Vec<ReferenceSatellite>,
     pub phase: GamePhase,
@@ -87,9 +85,31 @@ pub struct BodySnapshot {
     pub texture: Option<String>,
 }
 
+/// An active contract joined with its assigned craft's orbit compliance
+/// (None when unassigned or the craft has no orbit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveContractSnapshot {
+    #[serde(flatten)]
+    pub contract: ActiveContract,
+    pub orbit_ok: Option<bool>,
+}
+
+/// Craft-relative station geometry (reachable stations only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CraftStationStatus {
+    pub station_id: String,
+    pub elevation_deg: f64,
+    pub in_pass: bool,
+    pub next_pass_in_seconds: Option<f64>,
+    /// Effective link bandwidth for this craft (DSN-scaled).
+    pub bandwidth_mbps: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)] // presentation DTO mirroring sim state
 pub struct SpacecraftSnapshot {
+    /// Stable fleet id.
+    pub id: u32,
     pub name: String,
     pub bus_id: String,
     pub bus_name: String,
@@ -130,6 +150,10 @@ pub struct SpacecraftSnapshot {
     pub anomaly_label: Option<String>,
     /// One-way light time to Earth (flavor; 0 in Earth orbit).
     pub light_delay_seconds: f64,
+    /// This craft's daily ops line (company multiplier applied).
+    pub ops_cost_usd_per_day: f64,
+    /// Craft-relative station geometry (reachable stations only).
+    pub station_status: Vec<CraftStationStatus>,
     /// Cruise in progress (None on orbit / in design).
     pub transfer: Option<TransferSnapshot>,
     /// Planner readout for the selected destination (OnOrbit only).
@@ -173,11 +197,8 @@ pub struct StationSnapshot {
     pub name: String,
     pub latitude_deg: f64,
     pub longitude_deg: f64,
-    pub elevation_deg: f64,
-    pub in_pass: bool,
-    /// Effective link bandwidth for the current craft (DSN-scaled).
+    /// Base dish bandwidth (craft-effective rates live in station_status).
     pub bandwidth_mbps: f64,
-    pub next_pass_in_seconds: Option<f64>,
     pub body_id: String,
     pub dsn: bool,
 }

@@ -101,8 +101,10 @@ fn light_delay_scales_with_distance() {
             scenario_id: "campaign_start".into(),
         })
         .unwrap();
-    earth_sim.apply_action(PlayerAction::Launch).unwrap();
-    let earth_delay = earth_sim.snapshot().spacecraft.unwrap().light_delay_seconds;
+    earth_sim
+        .apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
+    let earth_delay = common::snap_craft(&earth_sim).light_delay_seconds;
     assert!(earth_delay < 0.1, "LEO light delay ~ms, got {earth_delay}");
 
     let mut mars_sim = SimState::new(load_content()).unwrap();
@@ -111,8 +113,10 @@ fn light_delay_scales_with_distance() {
             scenario_id: "sandbox_mars".into(),
         })
         .unwrap();
-    mars_sim.apply_action(PlayerAction::Launch).unwrap();
-    let mars_delay = mars_sim.snapshot().spacecraft.unwrap().light_delay_seconds;
+    mars_sim
+        .apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
+    let mars_delay = common::snap_craft(&mars_sim).light_delay_seconds;
     // Earth-Mars one-way light time is between ~3 and ~22 minutes.
     assert!(
         (180.0..1_400.0).contains(&mars_delay),
@@ -128,8 +132,11 @@ fn year_long_run_is_deterministic() {
             PlayerAction::LoadScenario {
                 scenario_id: "sandbox_luna".into(),
             },
-            PlayerAction::Launch,
-            PlayerAction::SetDownlink { active: true },
+            PlayerAction::Launch { craft_id: 0 },
+            PlayerAction::SetDownlink {
+                craft_id: 0,
+                active: true,
+            },
             PlayerAction::SetTimeAccel {
                 multiplier: 10_000.0,
             },
@@ -142,7 +149,7 @@ fn year_long_run_is_deterministic() {
             sim.step(1.0);
         }
         let snap = sim.snapshot();
-        let craft = snap.spacecraft.unwrap();
+        let craft = snap.spacecraft.into_iter().next().unwrap();
         (
             craft.position_eci_km[0].to_bits(),
             craft.power_wh.to_bits(),

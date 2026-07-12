@@ -42,25 +42,27 @@ fn multi_station_contract_requires_distinct_stations() {
     .unwrap();
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "science_multi".into(),
+        assigned_craft_id: Some(0),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch).unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
 
     // Artificially fill downlink quota but only one station
-    if let Some(c) = sim.company.active_contract.as_mut() {
+    if let Some(c) = sim.company.active_contracts.first_mut() {
         c.downlink_mb_done = c.downlink_mb_required;
         c.stations_used = vec!["svalbard".into()];
     }
-    sim.check_contract();
+    sim.check_contracts();
     assert!(
-        sim.company.active_contract.is_some(),
+        !sim.company.active_contracts.is_empty(),
         "should not complete with only 1 station"
     );
 
-    if let Some(c) = sim.company.active_contract.as_mut() {
+    if let Some(c) = sim.company.active_contracts.first_mut() {
         c.stations_used = vec!["svalbard".into(), "fairbanks".into(), "kiruna".into()];
     }
-    sim.check_contract();
+    sim.check_contracts();
     assert!(
         sim.company
             .completed_contracts
