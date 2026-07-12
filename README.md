@@ -2,7 +2,7 @@
 
 Browser-based satellite company simulator. Rust simulation core (WASM) + Three.js globe.
 
-**Playable through M8:** scenarios, campaign/sandbox modes with win/lose states, save/load (v3 with migration), multi-station and orbit-gated contracts, recurring economy with bankruptcy, pass planner, full ops + tycoon loop — and a data-driven solar system under the hood.
+**Playable through M13 — the full solar system campaign:** run an Earth imaging startup into an interplanetary agency. Programs gate the Moon, Mars, Venus and Jupiter; launch windows come from real mean-element ephemerides; transfers cruise on Hohmann rails with patched-conic burns; the Europa Ocean Survey is the grand victory.
 
 | Milestone | Feature                                                                                                          |
 | --------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -14,7 +14,13 @@ Browser-based satellite company simulator. Rust simulation core (WASM) + Three.j
 | M6        | Campaign rules, save/load, scenarios, pass ETA, multi-station contracts                                          |
 | M7        | Economy pressure (ops costs, bankruptcy), orbit requirements, decommission, victory/defeat                       |
 | M8        | Celestial bodies as data: `BodyRegistry` (μ/radius/rotation from content), J2000 ephemerides groundwork, save v3 |
-| M9+       | Moon/Mars operations, system map, launch windows, interplanetary transfers ([plan](docs/gdd.md))                 |
+| M9 | Moon/Mars operations: per-body stations, DSN links with farside blackout, anomaly flavors |
+| M10 | Live ephemerides, per-body seasonal sun, System Map (M) with compressed radii and true longitudes |
+| M11 | Interplanetary transfers: launch windows on mean longitudes, cash injections, hibernated cruise, deterministic warp |
+| M12 | Campaign Programs (buy-ins, keystones, grants), mobilization advances with clawback, on-station contracts, Mars+Venus campaigns |
+| M13 | Jupiter finale: Pioneer RTG bus, Juno-style eccentric capture, radiation upsets, grand victory |
+
+Textures: Earth/Moon from the three.js examples (NASA imagery); Mars from [Solar System Scope](https://www.solarsystemscope.com/textures/) (CC BY 4.0).
 
 ## Quick start
 
