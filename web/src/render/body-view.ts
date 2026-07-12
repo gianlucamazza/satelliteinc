@@ -51,6 +51,7 @@ export class BodyView {
   private readonly designOrbitLine: THREE.Line;
   private readonly downlinkLine: THREE.Line;
   private readonly satellite: THREE.Mesh;
+  private readonly fleetDots = new Map<number, THREE.Mesh>();
   private readonly stationMarkers: THREE.Group;
   private readonly stationLabels: THREE.Group;
   private readonly referenceSats: THREE.Group;
@@ -330,12 +331,12 @@ export class BodyView {
       : "";
   }
 
-  private syncStations(snapshot: Snapshot): void {
+  private syncStations(
+    snapshot: Snapshot,
+    selected: Snapshot["spacecraft"][number] | null,
+  ): void {
     const craftStatus = new Map(
-      (snapshot.spacecraft[0]?.station_status ?? []).map((st) => [
-        st.station_id,
-        st,
-      ]),
+      (selected?.station_status ?? []).map((st) => [st.station_id, st]),
     );
     for (const station of snapshot.ground_stations) {
       // Only stations sitting on the rendered body get surface markers.
@@ -386,6 +387,46 @@ export class BodyView {
     }
   }
 
+  /** Small markers for every other craft orbiting the focused body. */
+  private syncFleetDots(
+    snapshot: Snapshot,
+    selected: Snapshot["spacecraft"][number] | null,
+  ): void {
+    const seen = new Set<number>();
+    for (const c of snapshot.spacecraft) {
+      if (
+        c.id === selected?.id ||
+        c.body_id !== this.bodyId ||
+        c.phase !== "OnOrbit"
+      ) {
+        continue;
+      }
+      seen.add(c.id);
+      let dot = this.fleetDots.get(c.id);
+      if (!dot) {
+        dot = new THREE.Mesh(
+          new THREE.SphereGeometry(0.06, 12, 12),
+          new THREE.MeshBasicMaterial({ color: 0x88ddff }),
+        );
+        dot.renderOrder = 2;
+        this.scene.add(dot);
+        this.fleetDots.set(c.id, dot);
+      }
+      dot.position.copy(eciKmToRender(c.position_eci_km));
+      dot.visible = shouldShowLabel(dot.position, this.camera, {
+        occludeRadius: this.radiusRender,
+      });
+    }
+    for (const [id, dot] of this.fleetDots) {
+      if (!seen.has(id)) {
+        this.scene.remove(dot);
+        dot.geometry.dispose();
+        (dot.material as THREE.Material).dispose();
+        this.fleetDots.delete(id);
+      }
+    }
+  }
+
   private syncReferenceSats(snapshot: Snapshot): void {
     // TLE reference sats are Earth-orbit by nature (SGP4).
     const showAny = this.showTleRefs && this.bodyId === "earth";
@@ -430,8 +471,12 @@ export class BodyView {
     }
   }
 
-  update(snapshot: Snapshot): void {
-    const focusBodyId = snapshot.spacecraft[0]?.body_id ?? "earth";
+  update(snapshot: Snapshot, selectedCraftId = 0): void {
+    const selected =
+      snapshot.spacecraft.find((c) => c.id === selectedCraftId) ??
+      snapshot.spacecraft[0] ??
+      null;
+    const focusBodyId = selected?.body_id ?? "earth";
     const focusBody = snapshot.bodies.find((b) => b.id === focusBodyId);
     if (focusBody && focusBody.id !== this.bodyId) {
       this.setBody(focusBody);
@@ -450,10 +495,11 @@ export class BodyView {
       this.sunLight.position.set(d[0] * 50, d[2] * 50, d[1] * 50);
     }
 
-    this.syncStations(snapshot);
+    this.syncStations(snapshot, selected);
     this.syncReferenceSats(snapshot);
+    this.syncFleetDots(snapshot, selected);
 
-    const craft = snapshot.spacecraft[0] ?? null;
+    const craft = selected;
     this.downlinkLine.visible = false;
 
     if (!craft || craft.phase === "Design") {

@@ -1,4 +1,9 @@
-import type { GameContent, Snapshot } from "../types.ts";
+import type {
+  ActiveContractSnapshot,
+  GameContent,
+  Snapshot,
+  SpacecraftSnapshot,
+} from "../types.ts";
 import {
   bankruptcyRunwayDays,
   commandLabel,
@@ -92,6 +97,7 @@ export class HudPanel {
   private readonly actionEl: HTMLElement;
   private readonly eventEl: HTMLElement;
   private readonly phaseEl: HTMLElement;
+  private readonly fleetEl: HTMLElement;
   private readonly tabBar: HTMLElement;
   private readonly toastEl: HTMLElement;
   private currentSnapshot: Snapshot | null = null;
@@ -99,6 +105,7 @@ export class HudPanel {
   private statusFingerprint = "";
   private activeTab: HudTab = "mission";
   private transfersUnlocked = false;
+  private selectedCraftId = 0;
   private lastContractToast = "";
   private toastTimer: number | undefined;
   private victoryDismissed = false;
@@ -113,6 +120,20 @@ export class HudPanel {
     this.actionEl = document.getElementById("action-panel")!;
     this.eventEl = document.getElementById("event-log")!;
     this.phaseEl = document.getElementById("phase-label")!;
+    this.fleetEl = document.getElementById("fleet-strip")!;
+    this.fleetEl.addEventListener("click", (e) => {
+      const chip = (e.target as HTMLElement).closest<HTMLElement>(
+        "[data-craft]",
+      );
+      if (!chip?.dataset.craft) return;
+      const id = Number(chip.dataset.craft);
+      if (Number.isFinite(id) && id !== this.selectedCraftId) {
+        this.selectedCraftId = id;
+        this.statusFingerprint = "";
+        this.actionStructureKey = "";
+        if (this.currentSnapshot) this.update(this.currentSnapshot);
+      }
+    });
     this.tabBar = document.getElementById("tab-bar")!;
     this.toastEl = document.getElementById("toast")!;
     this.bindActionDelegation();
@@ -139,8 +160,68 @@ export class HudPanel {
     }
   }
 
+  /** Craft the HUD is focused on (falls back to the first). */
+  selectedCraft(s: Snapshot): SpacecraftSnapshot | null {
+    return (
+      s.spacecraft.find((c) => c.id === this.selectedCraftId) ??
+      s.spacecraft[0] ??
+      null
+    );
+  }
+
+  getSelectedCraftId(): number {
+    return this.currentSnapshot
+      ? (this.selectedCraft(this.currentSnapshot)?.id ?? 0)
+      : 0;
+  }
+
+  /** Contract the selected craft is serving (else the first active one). */
+  private contractFor(
+    s: Snapshot,
+    craft: SpacecraftSnapshot | null,
+  ): ActiveContractSnapshot | null {
+    return (
+      (craft &&
+        s.active_contracts.find((c) => c.assigned_craft_id === craft.id)) ??
+      s.active_contracts[0] ??
+      null
+    );
+  }
+
+  private renderFleetStrip(s: Snapshot): void {
+    if (s.spacecraft.length <= 1) {
+      this.fleetEl.innerHTML = "";
+      return;
+    }
+    const selected = this.selectedCraft(s);
+    this.fleetEl.innerHTML = s.spacecraft
+      .map((c) => {
+        const body = s.bodies.find((b) => b.id === c.body_id);
+        const contract = s.active_contracts.find(
+          (k) => k.assigned_craft_id === c.id,
+        );
+        const progress = contract
+          ? Math.round(
+              (contract.downlink_mb_done / contract.downlink_mb_required) *
+                100,
+            )
+          : null;
+        const phaseGlyph =
+          c.phase === "Design" ? "🛠" : c.phase === "Transfer" ? "➜" : "🛰";
+        const alert = c.anomaly_label ? `<span class="chip-alert">!</span>` : "";
+        return `<button type="button" class="fleet-chip${selected?.id === c.id ? " selected" : ""}" data-craft="${c.id}" title="${esc(c.name)} — ${esc(body?.name ?? c.body_id)}${c.anomaly_label ? ` · ${esc(c.anomaly_label)}` : ""}">
+          ${phaseGlyph} ${esc(c.name)}
+          <span class="chip-body">${esc(body?.name ?? c.body_id)}</span>
+          ${progress != null ? `<span class="chip-progress"><div style="width:${progress}%"></div></span>` : ""}
+          ${alert}
+        </button>`;
+      })
+      .join("");
+  }
+
   update(snapshot: Snapshot): void {
     this.currentSnapshot = snapshot;
+    this.renderFleetStrip(snapshot);
     if (snapshot.transfers_unlocked !== this.transfersUnlocked) {
       this.transfersUnlocked = snapshot.transfers_unlocked;
       if (!this.transfersUnlocked && this.activeTab === "transfer") {
@@ -149,8 +230,11 @@ export class HudPanel {
       this.renderTabs();
     }
     const bodyName =
-      snapshot.spacecraft[0] && snapshot.spacecraft[0].body_id !== "earth"
-        ? snapshot.bodies.find((b) => b.id === snapshot.spacecraft[0]?.body_id)
+      this.selectedCraft(snapshot) &&
+      this.selectedCraft(snapshot)?.body_id !== "earth"
+        ? snapshot.bodies.find(
+            (b) => b.id === this.selectedCraft(snapshot)?.body_id,
+          )
             ?.name
         : null;
     this.phaseEl.textContent = `${snapshot.phase.replace(/_/g, " ")} · ${snapshot.game_mode}${bodyName ? ` · ${bodyName}` : ""}`;
@@ -192,7 +276,7 @@ export class HudPanel {
   }
 
   private maybeToastContract(s: Snapshot): void {
-    const c = s.active_contracts[0] ?? null;
+    const c = this.contractFor(s, this.selectedCraft(s));
     if (!c) return;
     const days = contractDaysLeft(c, s.sim_seconds);
     // Key the guard on the contract so each new contract can warn again.
@@ -293,8 +377,8 @@ export class HudPanel {
   }
 
   private computeStatusFingerprint(s: Snapshot): string {
-    const c = s.spacecraft[0] ?? null;
-    const contract = s.active_contracts[0] ?? null;
+    const c = this.selectedCraft(s);
+    const contract = this.contractFor(s, this.selectedCraft(s));
     return [
       s.cash_usd.toFixed(0),
       s.reputation.toFixed(0),
@@ -309,7 +393,7 @@ export class HudPanel {
       c?.anomaly_label ?? "",
       c?.command_queue.length ?? "",
       contract?.downlink_mb_done.toFixed(0) ?? "",
-      (s.active_contracts[0]?.orbit_ok ?? null) ?? "",
+      (this.contractFor(s, c)?.orbit_ok ?? null) ?? "",
       s.outcome ?? "",
       s.ops_cost_usd_per_day.toFixed(0),
       c ? Math.round((c.power_wh / c.battery_wh_capacity) * 50) : "",
@@ -332,8 +416,8 @@ export class HudPanel {
     if (fp === this.statusFingerprint) return;
     this.statusFingerprint = fp;
 
-    const craft = s.spacecraft[0] ?? null;
-    const contract = s.active_contracts[0] ?? null;
+    const craft = this.selectedCraft(s);
+    const contract = this.contractFor(s, this.selectedCraft(s));
     const nextPass = nextPassStation(s);
     const craftBodyId = craft?.body_id ?? "earth";
 
@@ -360,7 +444,7 @@ export class HudPanel {
     const orbitReq = contract ? orbitRequirementText(contract) : "";
     const orbitSpecLine =
       contract && orbitReq
-        ? (s.active_contracts[0]?.orbit_ok ?? null) === false
+        ? contract.orbit_ok === false
           ? `<div class="orbit-spec bad">Orbit OUT OF SPEC — needs ${orbitReq}</div>`
           : `<div class="orbit-spec ok">Orbit OK (${orbitReq})</div>`
         : "";
@@ -480,7 +564,7 @@ export class HudPanel {
 
   private renderMissionTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft[0] ?? null;
+    const craft = this.selectedCraft(s);
 
     const scenarios = this.content.scenarios ?? [];
     if (scenarios.length) {
@@ -594,7 +678,7 @@ export class HudPanel {
 
   private renderOpsTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft[0] ?? null;
+    const craft = this.selectedCraft(s);
     if (craft?.phase !== "OnOrbit") {
       parts.push(`<p class="hint">Launch first to access ground ops.</p>`);
       return parts;
@@ -634,7 +718,7 @@ export class HudPanel {
 
   private renderTransferTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft[0] ?? null;
+    const craft = this.selectedCraft(s);
 
     if (craft?.phase === "Transfer" && craft.transfer) {
       const t = craft.transfer;
@@ -724,7 +808,7 @@ export class HudPanel {
 
   private renderOrbitTab(s: Snapshot): string[] {
     const parts: string[] = [];
-    const craft = s.spacecraft[0] ?? null;
+    const craft = this.selectedCraft(s);
     if (craft?.phase !== "OnOrbit") {
       parts.push(`<p class="hint">Launch first to access maneuvers.</p>`);
       return parts;
@@ -829,13 +913,16 @@ export class HudPanel {
   }
 
   private computeActionStructureKey(s: Snapshot): string {
-    const craft = s.spacecraft[0] ?? null;
+    const craft = this.selectedCraft(s);
     return [
       s.phase,
       s.game_mode,
       craft?.phase ?? "",
       craft?.bus_id ?? "",
-      s.active_contracts[0]?.template_id ?? "none",
+      s.active_contracts
+        .map((k) => `${k.template_id}:${k.assigned_craft_id ?? "-"}`)
+        .join(",") || "none",
+      this.selectedCraftId,
       s.transfers_unlocked,
       s.programs
         .map((p) => `${p.id}:${p.unlocked}:${p.completed}:${p.keystone_done}`)
@@ -869,7 +956,7 @@ export class HudPanel {
   }
 
   private updateActionDynamicState(s: Snapshot): void {
-    const craft = s.spacecraft[0] ?? null;
+    const craft = this.selectedCraft(s);
 
     for (const btn of document.querySelectorAll<HTMLButtonElement>(
       ".accel-btn",
@@ -975,12 +1062,14 @@ export class HudPanel {
         return;
       }
       if (target.id === "btn-decommission") {
-        const busId = s.spacecraft[0]?.bus_id;
+        const busId = this.selectedCraft(s)?.bus_id;
         if (busId) this.callbacks.onDecommission(this.salvageUsd(busId));
         return;
       }
       if (target.id === "btn-downlink") {
-        this.callbacks.onToggleDownlink(!s.spacecraft[0]?.downlink_active);
+        this.callbacks.onToggleDownlink(
+          !this.selectedCraft(s)?.downlink_active,
+        );
         return;
       }
       if (
@@ -993,7 +1082,7 @@ export class HudPanel {
         ) as HTMLSelectElement | null;
         const station =
           stationSel?.value ??
-          s.spacecraft[0]?.downlink_station_id ??
+          this.selectedCraft(s)?.downlink_station_id ??
           s.ground_stations[0]?.id;
         if (!station) return;
         const cmd =

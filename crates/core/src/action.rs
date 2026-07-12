@@ -14,6 +14,11 @@ pub enum PlayerAction {
         altitude_km: f64,
         inclination_deg: f64,
     },
+    /// Sandbox: stage the drawing-board craft at another body.
+    SetDesignBody {
+        craft_id: CraftId,
+        body_id: String,
+    },
     AcceptContract {
         contract_id: String,
         /// Craft that will serve the contract (assignment is 1:1).

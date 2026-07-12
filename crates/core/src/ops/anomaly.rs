@@ -58,6 +58,13 @@ impl ActiveAnomaly {
 /// Cooldown applied after an anomaly ends (natural expiry or commanded clear).
 pub const ANOMALY_COOLDOWN_SECONDS: f64 = 600.0;
 
+/// Per-craft phase stride: with a shared sim-time schedule, every craft in
+/// the fleet would suffer the SAME anomaly at the SAME tick. Offsetting by
+/// craft id (a value that is not a divisor/multiple of the 4000 s base
+/// period) decorrelates both the timing and the `bucket % 3` type. Craft 0
+/// gets offset 0 — bit-identical to the pre-fleet schedule.
+pub const ANOMALY_PHASE_STRIDE_SECONDS: f64 = 1_618.0;
+
 /// Deterministic anomaly roll from sim time: fires when a period boundary is
 /// crossed during the last `dt` step. Depending only on sim time keeps the
 /// schedule independent of frame cadence and time acceleration.
@@ -68,13 +75,15 @@ pub fn roll_anomaly(
     dt: f64,
     cooldown_until: f64,
     mtbf_multiplier: f64,
+    phase_offset_seconds: f64,
 ) -> Option<AnomalyType> {
     if sim_seconds < cooldown_until {
         return None;
     }
+    let effective = sim_seconds + phase_offset_seconds;
     let period_seconds = 4_000.0 * mtbf_multiplier.max(0.01);
-    let bucket = (sim_seconds / period_seconds).floor() as i64;
-    let prev_bucket = ((sim_seconds - dt) / period_seconds).floor() as i64;
+    let bucket = (effective / period_seconds).floor() as i64;
+    let prev_bucket = ((effective - dt) / period_seconds).floor() as i64;
     if bucket <= 0 || bucket == prev_bucket {
         return None;
     }

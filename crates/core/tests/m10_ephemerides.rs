@@ -107,14 +107,10 @@ fn light_delay_scales_with_distance() {
     let earth_delay = common::snap_craft(&earth_sim).light_delay_seconds;
     assert!(earth_delay < 0.1, "LEO light delay ~ms, got {earth_delay}");
 
-    let mut mars_sim = SimState::new(load_content()).unwrap();
+    let mut mars_sim = common::sandbox_at("mars", 400.0, 60.0);
+    let mars_id = mars_sim.fleet.last().unwrap().id;
     mars_sim
-        .apply_action(PlayerAction::LoadScenario {
-            scenario_id: "sandbox_mars".into(),
-        })
-        .unwrap();
-    mars_sim
-        .apply_action(PlayerAction::Launch { craft_id: 0 })
+        .apply_action(PlayerAction::Launch { craft_id: mars_id })
         .unwrap();
     let mars_delay = common::snap_craft(&mars_sim).light_delay_seconds;
     // Earth-Mars one-way light time is between ~3 and ~22 minutes.
@@ -127,14 +123,12 @@ fn light_delay_scales_with_distance() {
 #[test]
 fn year_long_run_is_deterministic() {
     let run = || {
-        let mut sim = SimState::new(load_content()).unwrap();
+        let mut sim = common::sandbox_at("moon", 100.0, 85.0);
+        let id = sim.fleet.last().unwrap().id;
         for action in [
-            PlayerAction::LoadScenario {
-                scenario_id: "sandbox_luna".into(),
-            },
-            PlayerAction::Launch { craft_id: 0 },
+            PlayerAction::Launch { craft_id: id },
             PlayerAction::SetDownlink {
-                craft_id: 0,
+                craft_id: id,
                 active: true,
             },
             PlayerAction::SetTimeAccel {

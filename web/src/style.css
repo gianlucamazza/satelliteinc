@@ -837,3 +837,53 @@ button.ghost {
 .globe-legend.map-hidden {
   display: none;
 }
+
+/* ---- Fleet strip (M14) ---- */
+.fleet-strip {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+.fleet-strip:empty {
+  display: none;
+}
+.fleet-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid rgba(120, 150, 200, 0.3);
+  border-radius: 14px;
+  background: rgba(14, 20, 34, 0.85);
+  color: #cfe0f5;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fleet-chip.selected {
+  border-color: #ffdd44;
+  background: rgba(50, 44, 16, 0.6);
+}
+.fleet-chip .chip-body {
+  color: #9fb4d8;
+}
+.fleet-chip .chip-alert {
+  color: var(--danger, #ff4466);
+  font-weight: 700;
+}
+.fleet-chip .chip-progress {
+  width: 34px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(120, 150, 200, 0.25);
+  overflow: hidden;
+}
+.fleet-chip .chip-progress > div {
+  height: 100%;
+  background: var(--success, #3dd68c);
+}
+.fleet-chip.add-craft {
+  border-style: dashed;
+  color: #9fb4d8;
+}

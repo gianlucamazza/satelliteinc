@@ -104,7 +104,7 @@ async function main(): Promise<void> {
       }
       if (
         runAction(
-          { type: "select_downlink_station", craft_id: 0, station_id: stationId },
+          { type: "select_downlink_station", craft_id: panel.getSelectedCraftId(), station_id: stationId },
           "Station select failed",
         )
       ) {
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
       runAction(
         {
           type: "set_orbit",
-          craft_id: 0,
+          craft_id: panel.getSelectedCraftId(),
           altitude_km: altitude,
           inclination_deg: inclination,
         },
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
     },
     onLaunch: () => {
       try {
-        snapshot = simAction({ type: "launch", craft_id: 0 });
+        snapshot = simAction({ type: "launch", craft_id: panel.getSelectedCraftId() });
         panel.update(snapshot);
         panel.logEvent("Satellite launched!", "contract");
         panel.showToast(
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
       }
     },
     onToggleDownlink: (active) => {
-      runAction({ type: "set_downlink", craft_id: 0, active }, "Downlink toggle failed");
+      runAction({ type: "set_downlink", craft_id: panel.getSelectedCraftId(), active }, "Downlink toggle failed");
     },
     onTimeAccel: (multiplier) => {
       if (multiplier > 0) {
@@ -172,7 +172,7 @@ async function main(): Promise<void> {
     },
     onProgradeBurn: (deltaV) => {
       try {
-        snapshot = simAction({ type: "prograde_burn", craft_id: 0, delta_v_km_s: deltaV });
+        snapshot = simAction({ type: "prograde_burn", craft_id: panel.getSelectedCraftId(), delta_v_km_s: deltaV });
         panel.update(snapshot);
         panel.logEvent(
           `Prograde +${(deltaV * 1000).toFixed(0)} m/s`,
@@ -184,7 +184,7 @@ async function main(): Promise<void> {
     },
     onRetrogradeBurn: (deltaV) => {
       try {
-        snapshot = simAction({ type: "retrograde_burn", craft_id: 0, delta_v_km_s: deltaV });
+        snapshot = simAction({ type: "retrograde_burn", craft_id: panel.getSelectedCraftId(), delta_v_km_s: deltaV });
         panel.update(snapshot);
         panel.logEvent(
           `Retrograde −${(deltaV * 1000).toFixed(0)} m/s`,
@@ -196,13 +196,13 @@ async function main(): Promise<void> {
     },
     onSetManeuverTarget: (altitude) => {
       runAction(
-        { type: "set_maneuver_target", craft_id: 0, target_altitude_km: altitude },
+        { type: "set_maneuver_target", craft_id: panel.getSelectedCraftId(), target_altitude_km: altitude },
         "Maneuver target failed",
       );
     },
     onStartHohmann: () => {
       try {
-        snapshot = simAction({ type: "start_hohmann", craft_id: 0 });
+        snapshot = simAction({ type: "start_hohmann", craft_id: panel.getSelectedCraftId() });
         panel.update(snapshot);
         panel.logEvent("Hohmann burn 1 — coast to next apsis", "contract");
       } catch (e) {
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
     },
     onCompleteHohmann: () => {
       try {
-        snapshot = simAction({ type: "complete_hohmann", craft_id: 0 });
+        snapshot = simAction({ type: "complete_hohmann", craft_id: panel.getSelectedCraftId() });
         panel.update(snapshot);
         panel.logEvent("Hohmann transfer complete!", "contract");
         panel.showToast("Orbit circularized", "success");
@@ -221,17 +221,17 @@ async function main(): Promise<void> {
     },
     onSelectDownlinkStation: (stationId) => {
       runAction(
-        { type: "select_downlink_station", craft_id: 0, station_id: stationId },
+        { type: "select_downlink_station", craft_id: panel.getSelectedCraftId(), station_id: stationId },
         "Station select failed",
       );
     },
     onSetPayloadMode: (mode) => {
-      runAction({ type: "set_payload_mode", craft_id: 0, mode }, "Payload mode failed");
+      runAction({ type: "set_payload_mode", craft_id: panel.getSelectedCraftId(), mode }, "Payload mode failed");
     },
     onQueueCommand: (command, stationId) => {
       if (
         runAction(
-          { type: "queue_command", craft_id: 0, command, station_id: stationId },
+          { type: "queue_command", craft_id: panel.getSelectedCraftId(), command, station_id: stationId },
           "Queue failed",
         )
       ) {
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
         "Decommission",
       ).then((confirmed) => {
         if (!confirmed) return;
-        if (runAction({ type: "decommission", craft_id: 0 }, "Decommission failed")) {
+        if (runAction({ type: "decommission", craft_id: panel.getSelectedCraftId() }, "Decommission failed")) {
           panel.logEvent("Satellite decommissioned", "contract");
           panel.markTabAttention("mission");
         }
@@ -268,7 +268,7 @@ async function main(): Promise<void> {
       runAction(
         {
           type: "set_transfer_target",
-          craft_id: 0,
+          craft_id: panel.getSelectedCraftId(),
           body_id: bodyId,
           capture_altitude_km: captureAltitudeKm,
           capture_inclination_deg: captureInclinationDeg,
@@ -283,7 +283,7 @@ async function main(): Promise<void> {
       }
     },
     onBeginTransfer: () => {
-      if (runAction({ type: "begin_transfer", craft_id: 0 }, "Transfer failed")) {
+      if (runAction({ type: "begin_transfer", craft_id: panel.getSelectedCraftId() }, "Transfer failed")) {
         panel.showToast("Injection burn complete — cruise started", "success");
         views.setActive("map");
       }
@@ -442,12 +442,15 @@ async function main(): Promise<void> {
     } else if (TAB_KEYS[e.key]) {
       panel.setTab(TAB_KEYS[e.key]!);
     } else if (e.key.toLowerCase() === "d") {
-      if (snapshot?.spacecraft[0]?.phase === "OnOrbit") {
+      const sel = snapshot?.spacecraft.find(
+        (c) => c.id === panel.getSelectedCraftId(),
+      );
+      if (sel?.phase === "OnOrbit") {
         runAction(
           {
             type: "set_downlink",
-            craft_id: 0,
-            active: !snapshot.spacecraft[0].downlink_active,
+            craft_id: sel.id,
+            active: !sel.downlink_active,
           },
           "Downlink toggle failed",
         );
@@ -461,7 +464,21 @@ async function main(): Promise<void> {
 
   let lastTime = performance.now();
 
+  function craftName(id: number): string {
+    return (
+      snapshot?.spacecraft.find((c) => c.id === id)?.name ?? `craft ${id}`
+    );
+  }
+
   function formatEvent(ev: SimEvent): string {
+    const prefix =
+      "craft_id" in ev && typeof ev.craft_id === "number"
+        ? `[${"craft_name" in ev ? (ev.craft_name) : craftName(ev.craft_id)}] `
+        : "";
+    return prefix + formatEventBody(ev);
+  }
+
+  function formatEventBody(ev: SimEvent): string {
     switch (ev.type) {
       case "pass_started":
         return `Pass started — ${ev.station_name}`;
@@ -535,18 +552,20 @@ async function main(): Promise<void> {
 
       snapshot = simStep(realDt);
 
-      if (
-        autoDownlink &&
-        snapshot.phase !== "game_over" &&
-        snapshot.spacecraft[0]?.phase === "OnOrbit" &&
-        snapshot.spacecraft[0].in_pass &&
-        !snapshot.spacecraft[0].downlink_active &&
-        snapshot.spacecraft[0].buffer_mb > 1
-      ) {
-        runAction(
-          { type: "set_downlink", craft_id: 0, active: true },
-          "Auto-downlink failed",
-        );
+      if (autoDownlink && snapshot.phase !== "game_over") {
+        for (const c of snapshot.spacecraft) {
+          if (
+            c.phase === "OnOrbit" &&
+            c.in_pass &&
+            !c.downlink_active &&
+            c.buffer_mb > 1
+          ) {
+            runAction(
+              { type: "set_downlink", craft_id: c.id, active: true },
+              "Auto-downlink failed",
+            );
+          }
+        }
       }
 
       for (const ev of pullEvents()) {
@@ -580,7 +599,7 @@ async function main(): Promise<void> {
         }
       }
 
-      views.update(snapshot);
+      views.update(snapshot, panel.getSelectedCraftId());
       panel.update(snapshot);
       views.render();
     } catch (e) {

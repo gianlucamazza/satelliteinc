@@ -94,11 +94,11 @@ fn safe_mode_command_halves_anomaly_duration() {
 #[test]
 fn redundancy_tech_stretches_anomaly_period() {
     // Base period 4000 s: boundary at 4000 fires with mtbf 1.0...
-    assert!(roll_anomaly(4_000.5, 1.0, 0.0, 1.0).is_some());
+    assert!(roll_anomaly(4_000.5, 1.0, 0.0, 1.0, 0.0).is_some());
     // ...but not with mtbf 2.4 (period 9600 s)...
-    assert!(roll_anomaly(4_000.5, 1.0, 0.0, 2.4).is_none());
+    assert!(roll_anomaly(4_000.5, 1.0, 0.0, 2.4, 0.0).is_none());
     // ...whose first boundary is at 9600 s.
-    assert!(roll_anomaly(9_600.5, 1.0, 0.0, 2.4).is_some());
+    assert!(roll_anomaly(9_600.5, 1.0, 0.0, 2.4, 0.0).is_some());
 }
 
 #[test]

@@ -58,25 +58,12 @@ fn rtg_keeps_power_positive_in_eclipse() {
 
 #[test]
 fn radiation_upset_wipes_a_fifth_of_the_buffer() {
-    let mut sim = SimState::new(load_content()).unwrap();
-    // Sandbox craft parked at Jupiter via scenario machinery: reuse venus
-    // sandbox then retarget by hand for a minimal deterministic setup.
-    sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "sandbox_venus".into(),
-    })
-    .unwrap();
-    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
-        .unwrap();
+    // Sandbox craft staged directly at Jupiter (unified sandbox).
+    let mut sim = common::sandbox_at("jupiter", 1_500_000.0, 10.0);
+    let craft_id = sim.fleet.last().unwrap().id;
+    sim.apply_action(PlayerAction::Launch { craft_id }).unwrap();
     {
-        let now = sim.clock.sim_seconds;
         let craft = common::only_craft_mut(&mut sim);
-        craft.body_id = "jupiter".into();
-        craft.elements = Some(satelliteinc_core::orbit::circular_orbit(
-            69_911.0,
-            1_500_000.0,
-            10.0,
-            now,
-        ));
         craft.buffer_mb = 1_000.0;
         craft.anomaly_cooldown_until = 0.0;
     }

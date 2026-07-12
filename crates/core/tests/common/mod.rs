@@ -55,3 +55,32 @@ pub fn snap_craft(sim: &SimState) -> SpacecraftSnapshot {
     assert_eq!(snap.spacecraft.len(), 1, "expected exactly one craft");
     snap.spacecraft.into_iter().next().unwrap()
 }
+
+/// Sandbox staged at any body: the unified replacement for the old
+/// per-body sandbox scenarios (sandbox_luna/mars/venus).
+#[allow(dead_code)]
+pub fn sandbox_at(body_id: &str, altitude_km: f64, inclination_deg: f64) -> SimState {
+    use satelliteinc_core::action::PlayerAction;
+    let mut sim = SimState::new(load_content()).unwrap();
+    sim.apply_action(PlayerAction::LoadScenario {
+        scenario_id: "sandbox_lab".into(),
+    })
+    .unwrap();
+    sim.apply_action(PlayerAction::SelectBus {
+        bus_id: "explorer".into(),
+    })
+    .unwrap();
+    let craft_id = sim.fleet.last().unwrap().id;
+    sim.apply_action(PlayerAction::SetDesignBody {
+        craft_id,
+        body_id: body_id.into(),
+    })
+    .unwrap();
+    sim.apply_action(PlayerAction::SetOrbit {
+        craft_id,
+        altitude_km,
+        inclination_deg,
+    })
+    .unwrap();
+    sim
+}

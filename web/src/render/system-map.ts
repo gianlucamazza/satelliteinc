@@ -285,9 +285,13 @@ export class SystemMapView {
     return entry;
   }
 
-  update(snapshot: Snapshot): void {
+  update(snapshot: Snapshot, selectedCraftId = 0): void {
     this.lastSnapshot = snapshot;
-    const craftBodyId = snapshot.spacecraft[0]?.body_id ?? null;
+    const selected =
+      snapshot.spacecraft.find((c) => c.id === selectedCraftId) ??
+      snapshot.spacecraft[0] ??
+      null;
+    const craftBodyId = selected?.body_id ?? null;
 
     for (const body of snapshot.bodies) {
       const entry = this.ensureBody(body);
@@ -320,7 +324,13 @@ export class SystemMapView {
     // Cruise: craft marker + transfer arc in heliocentric map space. The
     // craft's frame coordinates are offset by the frame body's position
     // (zero when the frame IS the sun).
-    const craft = snapshot.spacecraft[0] ?? null;
+    const cruising = snapshot.spacecraft.find(
+      (c) => c.phase === "Transfer" && c.transfer,
+    );
+    const craft =
+      selected?.phase === "Transfer" && selected.transfer
+        ? selected
+        : (cruising ?? null);
     const transfer = craft?.transfer ?? null;
     if (craft && transfer && craft.phase === "Transfer") {
       const frame = snapshot.bodies.find(

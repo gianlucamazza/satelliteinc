@@ -75,9 +75,9 @@ export class ViewManager {
       ?.classList.toggle("map-hidden", this.active === "map");
   }
 
-  update(snapshot: Snapshot): void {
-    this.bodyView.update(snapshot);
-    this.map.update(snapshot);
+  update(snapshot: Snapshot, selectedCraftId: number): void {
+    this.bodyView.update(snapshot, selectedCraftId);
+    this.map.update(snapshot, selectedCraftId);
   }
 
   render(): void {

@@ -2,7 +2,10 @@ mod anomaly;
 mod command;
 mod visibility;
 
-pub use anomaly::{ANOMALY_COOLDOWN_SECONDS, ActiveAnomaly, AnomalyType, roll_anomaly};
+pub use anomaly::{
+    ANOMALY_COOLDOWN_SECONDS, ANOMALY_PHASE_STRIDE_SECONDS, ActiveAnomaly, AnomalyType,
+    roll_anomaly,
+};
 pub use command::{CommandType, QueuedCommand, execute_command};
 pub use visibility::{elevation_deg, geodetic_to_ecef_km, is_in_pass, seconds_until_pass};
 

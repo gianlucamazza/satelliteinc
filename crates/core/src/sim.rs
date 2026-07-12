@@ -36,6 +36,10 @@ pub const SALVAGE_FRACTION: f64 = 0.15;
 pub const HIBERNATION_OPS_FRACTION: f64 = 0.10;
 /// Longest stride a single WarpTo call advances (re-issue to continue).
 pub const WARP_CHUNK_SECONDS: f64 = 2_000_000.0;
+/// Concurrent flights allowed until Mission Control slots land (M15).
+pub const MAX_FLIGHTS: usize = 3;
+/// Bankruptcy triggers this many days of burn below zero (min $50k).
+pub const BANKRUPTCY_RUNWAY_DAYS: f64 = 3.0;
 
 pub struct SimState {
     pub clock: SimClock,
@@ -166,7 +170,15 @@ impl SimState {
     // signature deliberately (the cap will read company state).
     #[allow(clippy::unused_self)]
     fn max_active_contracts(&self) -> usize {
-        1
+        MAX_FLIGHTS
+    }
+
+    /// Craft currently flying (on orbit or cruising).
+    fn active_flights(&self) -> usize {
+        self.fleet
+            .iter()
+            .filter(|c| c.phase != CraftPhase::Design)
+            .count()
     }
 
     /// The contract currently assigned to a craft, if any (1:1 binding).
@@ -442,6 +454,27 @@ impl SimState {
                 craft.target_altitude_km = altitude_km.clamp(min_park, max_park);
                 craft.target_inclination_deg = inclination_deg.clamp(0.0, 98.0);
             }
+            PlayerAction::SetDesignBody { craft_id, body_id } => {
+                if self.company.game_mode != GameMode::Sandbox {
+                    return Err(SimError::InvalidAction(
+                        "staging at another body is a sandbox convenience — in \
+                         campaign you fly there"
+                            .into(),
+                    ));
+                }
+                let body = self
+                    .bodies
+                    .get(&body_id)
+                    .ok_or_else(|| SimError::Content(format!("unknown body: {body_id}")))?;
+                if body.id == "sun" {
+                    return Err(SimError::InvalidAction("cannot stage at the sun".into()));
+                }
+                let (min_park, max_park) =
+                    (body.min_parking_altitude_km, body.max_parking_altitude_km);
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
+                craft.body_id = body_id;
+                craft.target_altitude_km = craft.target_altitude_km.clamp(min_park, max_park);
+            }
             PlayerAction::AcceptContract {
                 contract_id,
                 assigned_craft_id,
@@ -505,6 +538,11 @@ impl SimState {
                 });
             }
             PlayerAction::Launch { craft_id } => {
+                if self.active_flights() >= MAX_FLIGHTS {
+                    return Err(SimError::InvalidAction(format!(
+                        "mission control is saturated ({MAX_FLIGHTS} concurrent flights)"
+                    )));
+                }
                 let (cost, alt, inc) = {
                     let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
                     (
@@ -881,7 +919,11 @@ impl SimState {
                     cash_usd: self.company.cash_usd,
                 });
             }
-            if self.company.cash_usd < BANKRUPTCY_FLOOR_USD {
+            // The floor scales with the fleet's burn: a flat -50k would be
+            // less than a day of margin for three active craft.
+            let floor = BANKRUPTCY_FLOOR_USD
+                .min(-self.current_ops_cost_usd_per_day() * BANKRUPTCY_RUNWAY_DAYS);
+            if self.company.cash_usd < floor {
                 self.company.outcome = Some(GameOutcome::Bankrupt);
                 self.push_event(SimEvent::GameOver {
                     reason: GameOutcome::Bankrupt,
@@ -1015,6 +1057,7 @@ impl SimState {
                     dt,
                     craft.anomaly_cooldown_until,
                     self.company.anomaly_mtbf_multiplier / body_rate,
+                    f64::from(craft_id) * crate::ops::ANOMALY_PHASE_STRIDE_SECONDS,
                 )
             {
                 let mut anomaly = ActiveAnomaly::new(kind, sim_seconds);

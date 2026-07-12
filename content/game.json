@@ -732,9 +732,9 @@
     {
       "id": "sandbox_lab",
       "name": "Sandbox Lab",
-      "description": "All buses unlocked, relaxed marketplace, extra starting cash.",
+      "description": "All buses and programs open, extra cash \u2014 and stage new craft directly at any body to study it without the cruise.",
       "game_mode": "sandbox",
-      "starting_cash": 750000,
+      "starting_cash": 2000000,
       "starting_reputation": 50,
       "bus_id": "microsat",
       "altitude_km": 500,
@@ -751,44 +751,6 @@
       "contract_id": "comms_relay",
       "altitude_km": 450,
       "inclination_deg": 88
-    },
-    {
-      "id": "sandbox_luna",
-      "name": "Sandbox \u2014 Luna Station",
-      "description": "Explorer bus staged for lunar orbit: launch, map the poles, and learn the farside comms blackout.",
-      "game_mode": "sandbox",
-      "starting_cash": 1200000,
-      "starting_reputation": 70,
-      "bus_id": "explorer",
-      "body_id": "moon",
-      "contract_id": "moon_mapper",
-      "altitude_km": 100,
-      "inclination_deg": 85
-    },
-    {
-      "id": "sandbox_mars",
-      "name": "Sandbox \u2014 Ares Approach",
-      "description": "Explorer bus staged for Mars orbit: a thin DSN link, long dust storms, and a 24.6-hour day.",
-      "game_mode": "sandbox",
-      "starting_cash": 1500000,
-      "starting_reputation": 120,
-      "bus_id": "explorer",
-      "body_id": "mars",
-      "contract_id": "mars_recon",
-      "altitude_km": 400,
-      "inclination_deg": 60
-    },
-    {
-      "id": "sandbox_venus",
-      "name": "Sandbox \u2014 Morning Star",
-      "description": "Explorer bus staged for Venus orbit: power to spare, a hot thermal environment, and a slow retrograde day.",
-      "game_mode": "sandbox",
-      "starting_cash": 1500000,
-      "starting_reputation": 150,
-      "bus_id": "explorer",
-      "body_id": "venus",
-      "altitude_km": 500,
-      "inclination_deg": 60
     },
     {
       "id": "lunar_express",

@@ -7,13 +7,9 @@ mod common;
 use common::load_content;
 
 fn luna_sim() -> SimState {
-    let mut sim = SimState::new(load_content()).unwrap();
-    sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "sandbox_luna".into(),
-    })
-    .unwrap();
-    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
-        .unwrap();
+    let mut sim = common::sandbox_at("moon", 100.0, 85.0);
+    let craft_id = sim.fleet.last().unwrap().id;
+    sim.apply_action(PlayerAction::Launch { craft_id }).unwrap();
     sim
 }
 
@@ -147,13 +143,9 @@ fn contract_data_from_wrong_body_is_rejected() {
 
 #[test]
 fn mars_dust_storm_flavor_applies() {
-    let mut sim = SimState::new(load_content()).unwrap();
-    sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "sandbox_mars".into(),
-    })
-    .unwrap();
-    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
-        .unwrap();
+    let mut sim = common::sandbox_at("mars", 400.0, 60.0);
+    let craft_id = sim.fleet.last().unwrap().id;
+    sim.apply_action(PlayerAction::Launch { craft_id }).unwrap();
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 1000.0 })
         .unwrap();
     // Mars rate 1.3 shortens the 4000 s bucket to ~3077 s; bucket 1 is a
@@ -174,14 +166,12 @@ fn mars_dust_storm_flavor_applies() {
 #[test]
 fn moon_scenario_is_deterministic() {
     let run = || {
-        let mut sim = SimState::new(load_content()).unwrap();
+        let mut sim = common::sandbox_at("moon", 100.0, 85.0);
+        let id = sim.fleet.last().unwrap().id;
         for action in [
-            PlayerAction::LoadScenario {
-                scenario_id: "sandbox_luna".into(),
-            },
-            PlayerAction::Launch { craft_id: 0 },
+            PlayerAction::Launch { craft_id: id },
             PlayerAction::SetDownlink {
-                craft_id: 0,
+                craft_id: id,
                 active: true,
             },
             PlayerAction::SetTimeAccel { multiplier: 1000.0 },
@@ -205,8 +195,9 @@ fn moon_scenario_is_deterministic() {
 #[test]
 fn earth_stations_rejected_from_the_moon() {
     let mut sim = luna_sim();
+    let craft_id = sim.fleet.last().unwrap().id;
     let err = sim.apply_action(PlayerAction::SelectDownlinkStation {
-        craft_id: 0,
+        craft_id,
         station_id: "svalbard".into(),
     });
     assert!(
@@ -215,7 +206,7 @@ fn earth_stations_rejected_from_the_moon() {
     );
     // DSN dish is fine.
     sim.apply_action(PlayerAction::SelectDownlinkStation {
-        craft_id: 0,
+        craft_id,
         station_id: "goldstone".into(),
     })
     .unwrap();
