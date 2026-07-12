@@ -34,6 +34,8 @@ pub struct Snapshot {
     pub ops_cost_usd_per_day: f64,
     /// Whether interplanetary transfers are available to the company.
     pub transfers_unlocked: bool,
+    /// Earliest upcoming fleet event (warp-to-next-event target).
+    pub next_event_sim_seconds: Option<f64>,
     /// Campaign Programs with their gate status.
     pub programs: Vec<ProgramSnapshot>,
 }

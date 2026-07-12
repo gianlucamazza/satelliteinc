@@ -169,6 +169,9 @@ pub struct CompanyState {
     pub deep_space_comms_multiplier: f64,
     #[serde(default = "default_one")]
     pub capture_dv_multiplier: f64,
+    /// Extra Mission Control slots from R&D.
+    #[serde(default)]
+    pub extra_flight_slots: u32,
     pub unlocked_buses: Vec<String>,
     /// Terminal campaign state; None while the game is live.
     #[serde(default)]
@@ -203,6 +206,7 @@ impl CompanyState {
             ops_cost_multiplier: 1.0,
             deep_space_comms_multiplier: 1.0,
             capture_dv_multiplier: 1.0,
+            extra_flight_slots: 0,
             unlocked_buses: Vec::new(),
             outcome: None,
             unlocked_programs: content
@@ -316,6 +320,7 @@ impl CompanyState {
         self.ops_cost_multiplier *= tech.ops_cost_multiplier;
         self.deep_space_comms_multiplier *= tech.deep_space_comms_multiplier;
         self.capture_dv_multiplier *= tech.capture_dv_multiplier;
+        self.extra_flight_slots += tech.flight_slots;
         if let Some(bus_id) = &tech.unlocks_bus
             && !self.unlocked_buses.contains(bus_id)
         {

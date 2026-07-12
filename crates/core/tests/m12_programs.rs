@@ -71,14 +71,7 @@ fn locked_program_hides_contracts_in_campaign() {
 
 #[test]
 fn advance_pays_up_front_and_claws_back_on_failure() {
-    let mut sim = SimState::new(load_content()).unwrap();
-    sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "lunar_express".into(),
-    })
-    .unwrap();
-    // The tutorial pre-accepts moon_mapper WITHOUT an advance (scenario
-    // seeding): drop it and re-accept through the marketplace instead.
-    sim.company.active_contracts.clear();
+    let mut sim = common::interplanetary_campaign(&["moon_program"], 1_400_000.0, 70.0);
     let cash_before = sim.company.cash_usd;
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "moon_mapper".into(),
@@ -105,14 +98,11 @@ fn advance_pays_up_front_and_claws_back_on_failure() {
 
 #[test]
 fn on_station_requirement_gates_completion() {
-    let mut sim = SimState::new(load_content()).unwrap();
-    sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "mars_window".into(),
-    })
-    .unwrap();
-    // Swap the pre-accepted contract for the presence-based one.
-    sim.company.active_contracts.clear();
-    sim.company.reputation = 150.0; // clear dust_storm_watch's gate
+    let mut sim = common::interplanetary_campaign(
+        &["moon_program", "mars_program"],
+        2_200_000.0,
+        150.0, // clears dust_storm_watch's gate
+    );
     sim.apply_action(PlayerAction::AcceptContract {
         contract_id: "dust_storm_watch".into(),
         assigned_craft_id: Some(0),

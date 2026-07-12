@@ -36,8 +36,12 @@ pub const SALVAGE_FRACTION: f64 = 0.15;
 pub const HIBERNATION_OPS_FRACTION: f64 = 0.10;
 /// Longest stride a single WarpTo call advances (re-issue to continue).
 pub const WARP_CHUNK_SECONDS: f64 = 2_000_000.0;
-/// Concurrent flights allowed until Mission Control slots land (M15).
-pub const MAX_FLIGHTS: usize = 3;
+/// Mission Control baseline: concurrent flights before any growth.
+pub const BASE_FLIGHT_SLOTS: usize = 2;
+/// Daily staffing cost of each slot beyond the base two.
+pub const SLOT_OVERHEAD_USD_PER_DAY: f64 = 2_000.0;
+/// Sandbox flies free of the campaign's slot economics (soft cap).
+pub const SANDBOX_FLIGHT_SLOTS: usize = 6;
 /// Bankruptcy triggers this many days of burn below zero (min $50k).
 pub const BANKRUPTCY_RUNWAY_DAYS: f64 = 3.0;
 
@@ -166,11 +170,19 @@ impl SimState {
 
     /// Contract cap: M14a keeps the historical single slot; Mission
     /// Control slots (M15) will raise this.
-    // M15 raises this via Mission Control slots; &self stays in the
-    // signature deliberately (the cap will read company state).
-    #[allow(clippy::unused_self)]
+    /// Concurrent flights allowed: 2 base, +1 per completed Program,
+    /// +R&D annexes. You pay for each slot beyond the base (see ops cost).
+    pub fn max_flights(&self) -> usize {
+        if self.company.game_mode == GameMode::Sandbox {
+            return SANDBOX_FLIGHT_SLOTS;
+        }
+        BASE_FLIGHT_SLOTS
+            + self.company.completed_programs.len()
+            + self.company.extra_flight_slots as usize
+    }
+
     fn max_active_contracts(&self) -> usize {
-        MAX_FLIGHTS
+        self.max_flights()
     }
 
     /// Craft currently flying (on orbit or cruising).
@@ -538,9 +550,10 @@ impl SimState {
                 });
             }
             PlayerAction::Launch { craft_id } => {
-                if self.active_flights() >= MAX_FLIGHTS {
+                let max = self.max_flights();
+                if self.active_flights() >= max {
                     return Err(SimError::InvalidAction(format!(
-                        "mission control is saturated ({MAX_FLIGHTS} concurrent flights)"
+                        "mission control is saturated ({max} concurrent flights)"
                     )));
                 }
                 let (cost, alt, inc) = {
@@ -1327,7 +1340,10 @@ impl SimState {
             return 0.0;
         }
         let fleet_cost: f64 = self.fleet.iter().map(Self::craft_ops_raw_usd_per_day).sum();
-        (BASE_OVERHEAD_USD_PER_DAY + fleet_cost) * self.company.ops_cost_multiplier
+        // Slots beyond the base two bill their staffing whether flown or not.
+        let slot_overhead = SLOT_OVERHEAD_USD_PER_DAY
+            * (self.max_flights().saturating_sub(BASE_FLIGHT_SLOTS)) as f64;
+        (BASE_OVERHEAD_USD_PER_DAY + slot_overhead + fleet_cost) * self.company.ops_cost_multiplier
     }
 
     /// One craft's raw daily ops (before the company multiplier).
@@ -1454,6 +1470,7 @@ impl SimState {
             outcome: self.company.outcome,
             ops_cost_usd_per_day: self.current_ops_cost_usd_per_day(),
             transfers_unlocked: self.transfers_unlocked(),
+            next_event_sim_seconds: self.next_fleet_event_sim_seconds(),
             programs: self
                 .content
                 .programs
@@ -1712,6 +1729,73 @@ impl SimState {
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_KM_S
             },
         }
+    }
+
+    /// Earliest upcoming fleet event: the "warp to next event" target.
+    /// Considers transfer arrivals, planned-transfer windows, contract
+    /// deadlines, and each craft's next station pass/LOS window.
+    pub fn next_fleet_event_sim_seconds(&self) -> Option<f64> {
+        let now = self.clock.sim_seconds;
+        let mut next: Option<f64> = None;
+        let mut consider = |t: f64| {
+            if t > now + 1.0 {
+                next = Some(next.map_or(t, |n: f64| n.min(t)));
+            }
+        };
+
+        for contract in &self.company.active_contracts {
+            consider(contract.deadline_sim_seconds);
+        }
+        for craft in &self.fleet {
+            if let Some(t) = &craft.transfer {
+                consider(t.arrival_sim_seconds);
+                continue;
+            }
+            if craft.phase != CraftPhase::OnOrbit {
+                continue;
+            }
+            // Planned transfer waiting on a window.
+            if let Some(target) = &craft.transfer_target
+                && let (Some(origin), Some(dest)) = (
+                    self.bodies.idx(&craft.body_id),
+                    self.bodies.idx(&target.body_id),
+                )
+                && let Ok(window) =
+                    crate::orbit::next_launch_window(&self.bodies, origin, dest, now)
+            {
+                consider(window + 60.0);
+            }
+            // Next pass or DSN window for the craft's own downlink station.
+            if let Some(elements) = craft.elements {
+                let body = self.craft_body_of(craft);
+                let station = craft
+                    .downlink_station_id
+                    .as_ref()
+                    .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id));
+                if let Some(station) = station {
+                    let eta = if station.body_id == body.id {
+                        crate::ops::seconds_until_pass(
+                            body,
+                            &elements,
+                            station.latitude_deg,
+                            station.longitude_deg,
+                            station.min_elevation_deg,
+                            now,
+                            7200.0,
+                            15.0,
+                        )
+                    } else if station.dsn {
+                        self.seconds_until_los(body, &elements, now, 7200.0, 15.0)
+                    } else {
+                        None
+                    };
+                    if let Some(eta) = eta {
+                        consider(now + eta);
+                    }
+                }
+            }
+        }
+        next
     }
 
     /// Sandbox always; campaign once Deep Space Operations is researched.

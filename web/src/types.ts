@@ -230,6 +230,8 @@ export interface Snapshot {
   outcome: GameOutcome | null;
   ops_cost_usd_per_day: number;
   transfers_unlocked: boolean;
+  /** Earliest upcoming fleet event (warp-to-next-event target). */
+  next_event_sim_seconds: number | null;
   programs: ProgramSnapshot[];
 }
 

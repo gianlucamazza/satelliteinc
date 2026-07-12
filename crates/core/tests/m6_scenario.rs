@@ -9,7 +9,7 @@ fn load_scenario_sets_mode_and_contract() {
     let mut sim = SimState::new(content).unwrap();
 
     sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "ops_challenge".into(),
+        scenario_id: "campaign_start".into(),
     })
     .unwrap();
 
@@ -21,7 +21,12 @@ fn load_scenario_sets_mode_and_contract() {
             .first()
             .as_ref()
             .map(|c| c.template_id.as_str()),
-        Some("comms_relay")
+        Some("earth_imaging")
     );
-    assert_eq!(common::only_craft(&sim).bus_id, "microsat");
+    assert_eq!(
+        sim.company.active_contracts[0].assigned_craft_id,
+        Some(0),
+        "the seeded contract services the scenario craft"
+    );
+    assert_eq!(common::only_craft(&sim).bus_id, "cubesat");
 }

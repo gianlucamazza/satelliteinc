@@ -887,3 +887,39 @@ button.ghost {
   border-style: dashed;
   color: #9fb4d8;
 }
+
+/* ---- Guided missions (M15) ---- */
+.guided-overlay {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 25;
+  max-width: 300px;
+  background: rgba(10, 16, 28, 0.92);
+  border: 1px solid rgba(255, 221, 68, 0.4);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: #cfe0f5;
+}
+.guided-overlay h4 {
+  margin: 0 0 6px;
+  color: #ffdd44;
+  font-size: 13px;
+}
+.guided-overlay ol {
+  margin: 0;
+  padding-left: 18px;
+}
+.guided-overlay li {
+  margin: 3px 0;
+  color: #8fa2c0;
+}
+.guided-overlay li.current {
+  color: #eef4ff;
+  font-weight: 600;
+}
+.guided-overlay li.done {
+  text-decoration: line-through;
+  opacity: 0.55;
+}

@@ -319,6 +319,9 @@ pub struct TechNode {
     /// Multiplies capture burn Δv at bodies with an atmosphere (aerobraking).
     #[serde(default = "default_one")]
     pub capture_dv_multiplier: f64,
+    /// Extra Mission Control slots (concurrent flights).
+    #[serde(default)]
+    pub flight_slots: u32,
 }
 
 fn default_one() -> f64 {

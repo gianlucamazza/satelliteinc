@@ -7,16 +7,17 @@ use satelliteinc_core::{SimEvent, SimState, action::PlayerAction};
 mod common;
 use common::load_content;
 
-/// Tutorial scenario: explorer in LEO, deep-space ops certified,
-/// moon_mapper pre-accepted.
+/// Explorer in LEO, deep-space ops certified, moon program open,
+/// moon_mapper accepted and assigned (the old lunar_express staging).
 fn leo_sim() -> SimState {
-    let mut sim = SimState::new(load_content()).unwrap();
-    sim.apply_action(PlayerAction::LoadScenario {
-        scenario_id: "lunar_express".into(),
+    let mut sim = common::interplanetary_campaign(&["moon_program"], 1_400_000.0, 70.0);
+    let craft_id = sim.fleet.last().unwrap().id;
+    sim.apply_action(PlayerAction::Launch { craft_id }).unwrap();
+    sim.apply_action(PlayerAction::AcceptContract {
+        contract_id: "moon_mapper".into(),
+        assigned_craft_id: Some(craft_id),
     })
     .unwrap();
-    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
-        .unwrap();
     sim
 }
 

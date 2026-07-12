@@ -49,6 +49,7 @@ const STEPS = [
 
 export class Onboarding {
   private step = 0;
+  private single: { title: string; body: string } | null = null;
   private readonly root: HTMLElement;
 
   constructor() {
@@ -76,7 +77,15 @@ export class Onboarding {
 
   show(force = false): void {
     if (!force && !this.shouldShow()) return;
+    this.single = null;
     this.step = 0;
+    this.render();
+    this.root.classList.remove("hidden");
+  }
+
+  /** One contextual card (first-time triggers), outside the deck flow. */
+  showSingle(title: string, body: string): void {
+    this.single = { title, body };
     this.render();
     this.root.classList.remove("hidden");
   }
@@ -87,6 +96,11 @@ export class Onboarding {
   }
 
   private next(): void {
+    if (this.single) {
+      this.single = null;
+      this.root.classList.add("hidden");
+      return;
+    }
     if (this.step >= STEPS.length - 1) {
       this.dismiss();
       return;
@@ -102,6 +116,22 @@ export class Onboarding {
   }
 
   private render(): void {
+    if (this.single) {
+      this.root.querySelector("#onboarding-title")!.textContent =
+        this.single.title;
+      this.root.querySelector("#onboarding-body")!.textContent =
+        this.single.body;
+      this.root.querySelector("#onboarding-progress")!.textContent = "";
+      const backBtn = this.root.querySelector<HTMLButtonElement>(
+        "#onboarding-back",
+      )!;
+      const nextBtn = this.root.querySelector<HTMLButtonElement>(
+        "#onboarding-next",
+      )!;
+      backBtn.disabled = true;
+      nextBtn.textContent = "Got it";
+      return;
+    }
     const current = STEPS[this.step]!;
     const title = this.root.querySelector("#onboarding-title")!;
     const body = this.root.querySelector("#onboarding-body")!;

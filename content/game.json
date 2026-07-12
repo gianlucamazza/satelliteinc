@@ -706,6 +706,16 @@
       ],
       "unlocks_bus": "pioneer",
       "description": "Plutonium doesn't care how far the Sun is. Unlocks the Pioneer RTG bus."
+    },
+    {
+      "id": "mission_control_annex",
+      "name": "Mission Control Annex",
+      "cost_usd": 150000,
+      "requires": [
+        "deep_space_ops"
+      ],
+      "flight_slots": 1,
+      "description": "A second control room: +1 concurrent flight (staffing +$2k/day)."
     }
   ],
   "tle_catalog": [
@@ -739,63 +749,6 @@
       "bus_id": "microsat",
       "altitude_km": 500,
       "inclination_deg": 51.6
-    },
-    {
-      "id": "ops_challenge",
-      "name": "Ops Challenge",
-      "description": "Campaign with comms relay pre-accepted: raise your orbit to 700 km with a Hohmann transfer to start accruing progress.",
-      "game_mode": "campaign",
-      "starting_cash": 420000,
-      "starting_reputation": 20,
-      "bus_id": "microsat",
-      "contract_id": "comms_relay",
-      "altitude_km": 450,
-      "inclination_deg": 88
-    },
-    {
-      "id": "lunar_express",
-      "name": "Tutorial \u2014 Lunar Express",
-      "description": "Explorer fueled in LEO with Selene Cartography pre-accepted and deep-space ops certified: set the Moon as your transfer target, buy the injection, cruise, and map the poles.",
-      "game_mode": "campaign",
-      "starting_cash": 1400000,
-      "starting_reputation": 70,
-      "bus_id": "explorer",
-      "body_id": "earth",
-      "contract_id": "moon_mapper",
-      "altitude_km": 300,
-      "inclination_deg": 28,
-      "starting_tech": [
-        "comms_mk2",
-        "smallsat_bus",
-        "deep_space_ops"
-      ],
-      "starting_programs": [
-        "moon_program"
-      ]
-    },
-    {
-      "id": "mars_window",
-      "name": "Tutorial \u2014 The Long Haul",
-      "description": "Mars Program bought, Ares Recon pre-accepted, explorer staged in LEO. Warp to the window, buy the injection, and learn why hibernation exists.",
-      "game_mode": "campaign",
-      "starting_cash": 2200000,
-      "starting_reputation": 125,
-      "bus_id": "explorer",
-      "body_id": "earth",
-      "contract_id": "mars_recon",
-      "starting_tech": [
-        "comms_mk2",
-        "smallsat_bus",
-        "deep_space_ops",
-        "comms_mk3",
-        "high_gain_antenna"
-      ],
-      "altitude_km": 300,
-      "inclination_deg": 28,
-      "starting_programs": [
-        "moon_program",
-        "mars_program"
-      ]
     }
   ],
   "programs": [

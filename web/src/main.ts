@@ -13,6 +13,7 @@ import {
 import type { GameContent, SimEvent, Snapshot } from "./types.ts";
 import { confirmModal } from "./ui/modal.ts";
 import { Onboarding } from "./ui/onboarding.ts";
+import { GuidedMissions } from "./ui/guided.ts";
 import { ACCEL_PRESETS, HudPanel, type HudTab } from "./ui/panel.ts";
 
 const content = gameContent as GameContent;
@@ -394,7 +395,65 @@ async function main(): Promise<void> {
   }
 
   const onboarding = new Onboarding();
-  onboarding.show();
+  const guided = new GuidedMissions();
+
+  // Contextual first-time cards replace the front-loaded deck: one card per
+  // trigger, at the moment the system first matters.
+  const CONTEXT_CARDS: Partial<
+    Record<SimEvent["type"], { title: string; body: string }>
+  > = {
+    launched: {
+      title: "You're in orbit",
+      body: "Collect imagery in sunlight; the buffer fills. During a station pass, downlink to make contract progress. The status panel always says why data is (or isn't) flowing.",
+    },
+    pass_started: {
+      title: "First pass",
+      body: "A ground station sees your craft: downlink now (D key or the Ops tab). Auto-downlink can do this for you — it's on by default in settings.",
+    },
+    anomaly_started: {
+      title: "First anomaly",
+      body: "Something broke and it drains extra power until handled. Queue Clear anomaly / Reboot comms / Safe mode from the Ops tab — commands execute at the next pass.",
+    },
+    cash_negative: {
+      title: "You're burning reserves",
+      body: "Cash is negative. Bankruptcy hits at three days of burn below zero — get a contract flowing or decommission idle craft (their ops bill never sleeps).",
+    },
+    transfer_started: {
+      title: "Cruise mode",
+      body: "The craft hibernates: 10% ops cost, no anomalies, capture propellant already reserved. Warp to arrival whenever you like — insertion is automatic.",
+    },
+    transfer_arrived: {
+      title: "Captured",
+      body: "You're in orbit at a new body. Local stations (if any) or the Earth DSN carry your downlink — the pipe is thinner out here; check the effective Mbps.",
+    },
+  };
+  const seenCards = new Set<string>(
+    (() => {
+      try {
+        return JSON.parse(
+          localStorage.getItem("satelliteinc_seen_cards") ?? "[]",
+        ) as string[];
+      } catch {
+        return [];
+      }
+    })(),
+  );
+  function maybeShowContextCard(type: SimEvent["type"]): void {
+    const card = CONTEXT_CARDS[type];
+    if (!card || seenCards.has(type)) return;
+    seenCards.add(type);
+    try {
+      localStorage.setItem(
+        "satelliteinc_seen_cards",
+        JSON.stringify([...seenCards]),
+      );
+    } catch {
+      // storage unavailable
+    }
+    onboarding.showSingle(card.title, card.body);
+  }
+  // The linear deck stays a reference manual under `?`; teaching happens
+  // through contextual first-time cards and guided missions.
 
   // Keyboard shortcuts (skip while typing in a form control or a modal is up).
   const TAB_KEYS: Record<string, HudTab> = {
@@ -569,6 +628,7 @@ async function main(): Promise<void> {
       }
 
       for (const ev of pullEvents()) {
+        maybeShowContextCard(ev.type);
         const msg = formatEvent(ev);
         panel.logEvent(msg, eventClass(ev));
         if (ev.type === "pass_started") {
@@ -601,6 +661,7 @@ async function main(): Promise<void> {
 
       views.update(snapshot, panel.getSelectedCraftId());
       panel.update(snapshot);
+      guided.update(snapshot);
       views.render();
     } catch (e) {
       console.error("frame error:", e);

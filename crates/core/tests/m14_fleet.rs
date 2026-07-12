@@ -62,23 +62,45 @@ fn two_craft_fly_independent_orbits() {
 }
 
 #[test]
-fn flight_cap_blocks_a_fourth_launch() {
-    let mut sim = two_craft_sim();
-    for bus in ["cubesat", "cubesat"] {
-        sim.apply_action(PlayerAction::SelectBus { bus_id: bus.into() })
-            .unwrap();
-    }
-    let id = sim.fleet.last().unwrap().id;
-    sim.apply_action(PlayerAction::Launch { craft_id: id })
+fn mission_control_slots_gate_campaign_launches() {
+    // Campaign base: 2 slots. Completed programs and the annex add more.
+    let mut sim = SimState::new(load_content()).unwrap();
+    sim.apply_action(PlayerAction::LoadScenario {
+        scenario_id: "campaign_start".into(),
+    })
+    .unwrap();
+    sim.company.cash_usd = 2_000_000.0;
+    assert_eq!(sim.max_flights(), 2);
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
         .unwrap();
-    // Third flight is up; a fourth must be rejected.
     sim.apply_action(PlayerAction::SelectBus {
         bus_id: "cubesat".into(),
     })
     .unwrap();
     let id = sim.fleet.last().unwrap().id;
-    let err = sim.apply_action(PlayerAction::Launch { craft_id: id });
-    assert!(err.is_err(), "mission control cap must hold");
+    sim.apply_action(PlayerAction::Launch { craft_id: id })
+        .unwrap();
+    // Two flights up: the third hits the base cap.
+    sim.apply_action(PlayerAction::SelectBus {
+        bus_id: "cubesat".into(),
+    })
+    .unwrap();
+    let id = sim.fleet.last().unwrap().id;
+    assert!(
+        sim.apply_action(PlayerAction::Launch { craft_id: id })
+            .is_err(),
+        "base mission control cap must hold"
+    );
+    // A completed program grows the room — and bills its staffing.
+    let ops_before = sim.current_ops_cost_usd_per_day();
+    sim.company.completed_programs.push("earth_program".into());
+    assert_eq!(sim.max_flights(), 3);
+    assert!(
+        sim.current_ops_cost_usd_per_day() > ops_before,
+        "extra slots bill staffing"
+    );
+    sim.apply_action(PlayerAction::Launch { craft_id: id })
+        .unwrap();
 }
 
 #[test]

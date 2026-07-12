@@ -538,6 +538,11 @@ export class HudPanel {
           <input type="checkbox" id="auto-downlink" ${this.callbacks.getAutoDownlink() ? "checked" : ""} />
           Auto-downlink on pass
         </label>
+        ${
+          s.next_event_sim_seconds != null
+            ? `<button id="btn-warp-next" data-warp="${s.next_event_sim_seconds}" title="Warp to the fleet's next pass, window, arrival or deadline">⏭ Next event (${formatDuration(s.next_event_sim_seconds - s.sim_seconds)})</button>`
+            : ""
+        }
       </div>
     `);
 
@@ -924,6 +929,9 @@ export class HudPanel {
         .join(",") || "none",
       this.selectedCraftId,
       s.transfers_unlocked,
+      s.next_event_sim_seconds == null
+        ? ""
+        : Math.round((s.next_event_sim_seconds - s.sim_seconds) / 60),
       s.programs
         .map((p) => `${p.id}:${p.unlocked}:${p.completed}:${p.keystone_done}`)
         .join(","),
@@ -1121,7 +1129,11 @@ export class HudPanel {
         this.callbacks.onBeginTransfer();
         return;
       }
-      if (target.id === "btn-warp-window" || target.id === "btn-warp-arrival") {
+      if (
+        target.id === "btn-warp-window" ||
+        target.id === "btn-warp-arrival" ||
+        target.id === "btn-warp-next"
+      ) {
         const warpTo = Number(target.dataset.warp);
         if (Number.isFinite(warpTo)) {
           this.callbacks.onWarpTo(warpTo);

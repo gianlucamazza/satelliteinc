@@ -84,3 +84,35 @@ pub fn sandbox_at(body_id: &str, altitude_km: f64, inclination_deg: f64) -> SimS
     .unwrap();
     sim
 }
+
+/// Campaign staged for interplanetary work: explorer in LEO, deep-space
+/// certification, the target program bought in — the state the old
+/// lunar_express/mars_window tutorial scenarios used to seed (they are
+/// in-campaign guided missions now).
+#[allow(dead_code)]
+pub fn interplanetary_campaign(programs: &[&str], cash: f64, reputation: f64) -> SimState {
+    use satelliteinc_core::action::PlayerAction;
+    // Fresh campaign company (no scenario): SelectBus mints craft id 0.
+    let mut sim = SimState::new(load_content()).unwrap();
+    sim.company.cash_usd = cash;
+    sim.company.reputation = reputation;
+    for tech_id in ["comms_mk2", "smallsat_bus", "deep_space_ops"] {
+        let tech = sim.content.tech(tech_id).unwrap().clone();
+        sim.company.apply_tech(&tech);
+    }
+    for program in programs {
+        sim.company.unlocked_programs.push((*program).to_string());
+    }
+    sim.apply_action(PlayerAction::SelectBus {
+        bus_id: "explorer".into(),
+    })
+    .unwrap();
+    let craft_id = sim.fleet.last().unwrap().id;
+    sim.apply_action(PlayerAction::SetOrbit {
+        craft_id,
+        altitude_km: 300.0,
+        inclination_deg: 28.0,
+    })
+    .unwrap();
+    sim
+}
