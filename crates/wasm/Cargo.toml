@@ -9,6 +9,10 @@ description = "WASM bindings for satelliteinc-core"
 [lints]
 workspace = true
 
+# Post-link size pass: -Oz beats wasm-pack's default -O for a sim core.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

@@ -6,10 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build:wasm": "wasm-pack build ../crates/wasm --target web",
-    "prebuild": "pnpm run build:wasm",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
   },
   "dependencies": {
     "@tweakpane/core": "^2.0.5",
@@ -18,9 +18,15 @@
   },
   "devDependencies": {
     "@types/three": "^0.175.0",
+    "eslint": "^10.7.0",
     "typescript": "^5.8.2",
-    "vite": "^6.2.3",
+    "typescript-eslint": "^8.63.0",
+    "vite": "^6.4.3",
     "vite-plugin-top-level-await": "^1.5.0",
     "vite-plugin-wasm": "^3.4.1"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=22"
   }
 }

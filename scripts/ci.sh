@@ -12,6 +12,7 @@ wasm-pack build crates/wasm --target web
 cd web
 pnpm install --frozen-lockfile
 pnpm run typecheck
+pnpm run lint
 pnpm run build
 
 echo "CI checks passed."

@@ -17,5 +17,10 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+    rollupOptions: {
+      // three.js only changes on upgrades: keep it in its own chunk so
+      // returning players re-download just the app code.
+      output: { manualChunks: { three: ["three"] } },
+    },
   },
 });
