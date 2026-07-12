@@ -1,6 +1,7 @@
 import { Pane } from "tweakpane";
 import gameContent from "../../content/game.json";
 import { BodyView } from "./render/body-view.ts";
+import { ViewManager } from "./render/view-manager.ts";
 import {
   exportSave,
   importSave,
@@ -113,6 +114,7 @@ async function main(): Promise<void> {
     },
     showTleRefs: () => showTleRefs,
   });
+  const views = new ViewManager(globe, canvas);
 
   await loadSim(content);
   loadingEl.classList.add("hidden");
@@ -411,6 +413,8 @@ async function main(): Promise<void> {
           "Downlink toggle failed",
         );
       }
+    } else if (e.key.toLowerCase() === "m") {
+      views.toggle();
     } else if (e.key === "?") {
       onboarding.show(true);
     }
@@ -516,9 +520,9 @@ async function main(): Promise<void> {
         }
       }
 
-      globe.update(snapshot);
+      views.update(snapshot);
       panel.update(snapshot);
-      globe.render();
+      views.render();
     } catch (e) {
       console.error("frame error:", e);
       panel.logError(`Sim error: ${errorText(e)}`);

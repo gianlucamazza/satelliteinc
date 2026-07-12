@@ -338,6 +338,11 @@ export class HudPanel {
       })
       .join("");
 
+    const lightDelayLine =
+      craft && craft.light_delay_seconds > 1.0
+        ? `<div class="stat"><label>Light delay</label><strong>${craft.light_delay_seconds < 120 ? `${craft.light_delay_seconds.toFixed(0)} s` : `${(craft.light_delay_seconds / 60).toFixed(1)} min`}</strong><span class="stat-sub">one-way to Earth</span></div>`
+        : "";
+
     const orbitReq = contract ? orbitRequirementText(contract) : "";
     const orbitSpecLine =
       contract && orbitReq
@@ -408,7 +413,7 @@ export class HudPanel {
       ${contractBlock}
       ${craftBlock}
       ${nextPassBlock}
-      <div class="stat-grid stations">${stationRows}</div>
+      <div class="stat-grid stations">${lightDelayLine}${stationRows}</div>
     `;
   }
 

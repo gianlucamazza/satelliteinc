@@ -504,10 +504,9 @@ impl SimState {
             )
         };
         let eci = eci_position_km(mu, &elements, sim_seconds);
-        // Per-body sun direction, frozen at epoch until the seasonal sun
-        // lands (M10). Earth sits on -X at epoch, so its direction stays the
-        // +X the fixed-shadow model always used.
-        let sun_dir = self.bodies.sun_direction_from(body_idx, 0.0);
+        // Seasonal sun from the ephemerides: eclipse geometry drifts over
+        // the year as the body moves around the sun.
+        let sun_dir = self.bodies.sun_direction_from(body_idx, sim_seconds);
         let sunlight = in_sunlight(eci, sun_dir, radius);
         let ecef = eci_to_ecef_km(rotation, eci, sim_seconds);
         // Deep-space link: visible when the craft's own body doesn't block
@@ -816,7 +815,9 @@ impl SimState {
         let marketplace = self.company.marketplace(&self.content);
         let craft_body = self.craft_body();
         let craft_body_idx = self.bodies.idx(&craft_body.id).expect("validated body id");
-        let sun_dir = self.bodies.sun_direction_from(craft_body_idx, 0.0);
+        let sun_dir = self
+            .bodies
+            .sun_direction_from(craft_body_idx, self.clock.sim_seconds);
         let earth_los_now = |elements: &crate::orbit::KeplerElements| {
             if craft_body.id == "earth" {
                 false
@@ -926,6 +927,23 @@ impl SimState {
                 command_queue: craft.command_queue.clone(),
                 active_anomaly: anomaly_type,
                 anomaly_label,
+                light_delay_seconds: {
+                    const C_KM_S: f64 = 299_792.458;
+                    let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
+                    let e = self
+                        .bodies
+                        .heliocentric_position_km(earth_idx, self.clock.sim_seconds);
+                    let b = self
+                        .bodies
+                        .heliocentric_position_km(craft_body_idx, self.clock.sim_seconds);
+                    let craft_helio = [b[0] + position[0], b[1] + position[1], b[2] + position[2]];
+                    let d = [
+                        craft_helio[0] - e[0],
+                        craft_helio[1] - e[1],
+                        craft_helio[2] - e[2],
+                    ];
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_KM_S
+                },
             }
         });
 
@@ -1034,6 +1052,7 @@ impl SimState {
 
         Snapshot {
             bodies,
+            epoch_utc: self.content.epoch_utc.clone(),
             sim_seconds: self.clock.sim_seconds,
             sim_days: self.clock.sim_days(),
             time_accel: self.clock.time_accel,

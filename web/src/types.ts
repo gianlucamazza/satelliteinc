@@ -136,6 +136,8 @@ export interface SpacecraftSnapshot {
   command_queue: QueuedCommand[];
   active_anomaly: string | null;
   anomaly_label: string | null;
+  /** One-way light time to Earth (flavor; ~0 in Earth orbit). */
+  light_delay_seconds: number;
 }
 
 export interface StationSnapshot {
@@ -154,6 +156,8 @@ export interface StationSnapshot {
 
 export interface Snapshot {
   bodies: BodySnapshot[];
+  /** UTC instant that sim_seconds = 0 represents. */
+  epoch_utc: string;
   sim_seconds: number;
   sim_days: number;
   time_accel: number;

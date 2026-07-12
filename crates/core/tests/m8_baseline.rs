@@ -72,7 +72,10 @@ fn campaign_slice_is_bit_identical() {
     check("pos_x", craft.position_eci_km[0], 0xc0ba4fd72e31487d);
     check("pos_y", craft.position_eci_km[1], 0x40853086d443fc51);
     check("pos_z", craft.position_eci_km[2], 0x409259c724ccf28b);
-    check("power_wh", craft.power_wh, 0x403304c527754742);
+    // Re-captured at M10: the sun now moves with the ephemerides, so eclipse
+    // boundaries (and thus battery state) shifted deliberately. Every other
+    // literal survived the change bit-exact.
+    check("power_wh", craft.power_wh, 0x403305e58335617a);
     check("buffer_mb", craft.buffer_mb, 0x40a0000000000000);
     check(
         "contract_progress",

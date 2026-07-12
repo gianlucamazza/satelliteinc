@@ -10,6 +10,8 @@ use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, PendingHoh
 pub struct Snapshot {
     /// Celestial bodies with positions at the current sim time.
     pub bodies: Vec<BodySnapshot>,
+    /// UTC instant that sim_seconds = 0 represents.
+    pub epoch_utc: String,
     pub sim_seconds: f64,
     pub sim_days: f64,
     pub time_accel: f64,
@@ -104,6 +106,8 @@ pub struct SpacecraftSnapshot {
     pub command_queue: Vec<QueuedCommand>,
     pub active_anomaly: Option<AnomalyType>,
     pub anomaly_label: Option<String>,
+    /// One-way light time to Earth (flavor; 0 in Earth orbit).
+    pub light_delay_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

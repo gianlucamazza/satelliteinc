@@ -475,6 +475,18 @@
       "contract_id": "mars_recon",
       "altitude_km": 400,
       "inclination_deg": 60
+    },
+    {
+      "id": "sandbox_venus",
+      "name": "Sandbox \u2014 Morning Star",
+      "description": "Explorer bus staged for Venus orbit: power to spare, a hot thermal environment, and a slow retrograde day.",
+      "game_mode": "sandbox",
+      "starting_cash": 1500000,
+      "starting_reputation": 150,
+      "bus_id": "explorer",
+      "body_id": "venus",
+      "altitude_km": 500,
+      "inclination_deg": 60
     }
   ]
 }
