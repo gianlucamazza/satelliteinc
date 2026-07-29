@@ -10,53 +10,40 @@ import {
   contractDaysLeft,
   contractProgress,
   dataFlowStatus,
+  downlinkRateLabel,
   formatDuration,
+  isDownlinkLinkLive,
   nextPassStation,
   orbitRequirementText,
   payloadModeLabel,
 } from "./format.ts";
+import { releaseFocus, trapFocus } from "./focus-trap.ts";
+import { esc, gauge } from "./html.ts";
+import { ToastQueue, type ToastKind } from "./toast.ts";
+import { renderCompanyTab } from "./tabs/company.ts";
+import { renderOpsTab } from "./tabs/ops.ts";
+import { renderOrbitTab } from "./tabs/orbit.ts";
+import { renderTransferTab } from "./tabs/transfer.ts";
 
 export type HudTab = "mission" | "ops" | "orbit" | "transfer" | "company";
+
+const TAB_KBD: Record<HudTab, string> = {
+  mission: "1",
+  ops: "2",
+  orbit: "3",
+  company: "4",
+  transfer: "5",
+};
 
 /** Discrete time-acceleration presets (0 = paused). */
 export const ACCEL_PRESETS = [0, 1, 10, 100, 1000, 10000] as const;
 
-/** Escape content-derived strings interpolated into innerHTML. */
-function esc(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-/** Stat cell with a fill bar showing value against capacity. */
-function gauge(
-  label: string,
-  value: number,
-  capacity: number,
-  unit: string,
-  opts: { lowIsBad?: boolean; highIsWarn?: boolean } = {},
-): string {
-  const pct =
-    capacity > 0 ? Math.max(0, Math.min(100, (value / capacity) * 100)) : 0;
-  const level =
-    opts.lowIsBad && pct < 20
-      ? " danger"
-      : opts.highIsWarn && pct > 80
-        ? " warn"
-        : "";
-  return `<div class="stat gauge">
-    <label>${label}</label>
-    <strong>${value.toFixed(value < 10 ? 1 : 0)} ${unit} <span class="stat-sub">(${pct.toFixed(0)}%)</span></strong>
-    <div class="progress-bar thin"><div class="progress-fill${level}" style="width:${pct}%"></div></div>
-  </div>`;
-}
-
 export interface PanelCallbacks {
   onSelectBus: (busId: string) => void;
   onSetOrbit: (altitude: number, inclination: number) => void;
-  onAcceptContract: (contractId: string) => void;
+  onAcceptContract: (contractId: string, craftId?: number) => void;
+  onRushBid: (contractId: string, craftId?: number) => void;
+  onAssignContract: (contractId: string, craftId: number | null) => void;
   onLaunch: () => void;
   onToggleDownlink: (active: boolean) => void;
   onTimeAccel: (multiplier: number) => void;
@@ -65,6 +52,7 @@ export interface PanelCallbacks {
   onSetManeuverTarget: (altitude: number) => void;
   onStartHohmann: () => void;
   onCompleteHohmann: () => void;
+  onPlaneChange: (deltaInclinationDeg: number) => void;
   onSelectDownlinkStation: (stationId: string) => void;
   onSetPayloadMode: (mode: string) => void;
   onQueueCommand: (command: string, stationId: string) => void;
@@ -83,9 +71,13 @@ export interface PanelCallbacks {
   onRestartCampaign: () => void;
   onShowHelp: () => void;
   onAutoDownlinkChange: (active: boolean) => void;
+  onAutoPauseArrivalChange: (active: boolean) => void;
+  onAutoPauseAnomalyChange: (active: boolean) => void;
   onShowTleRefsChange: (active: boolean) => void;
   onShowLegendChange: (active: boolean) => void;
   getShowLegend: () => boolean;
+  getAutoPauseArrival: () => boolean;
+  getAutoPauseAnomaly: () => boolean;
   onLoadScenario: (scenarioId: string) => void;
   onExportSave: () => void;
   onImportSave: () => void;
@@ -95,29 +87,38 @@ export interface PanelCallbacks {
 
 export class HudPanel {
   private readonly statusEl: HTMLElement;
+  private readonly priorityEl: HTMLElement;
+  private readonly timeToolbarEl: HTMLElement;
   private readonly actionEl: HTMLElement;
   private readonly eventEl: HTMLElement;
   private readonly phaseEl: HTMLElement;
   private readonly fleetEl: HTMLElement;
   private readonly tabBar: HTMLElement;
-  private readonly toastEl: HTMLElement;
+  private timeToolbarKey = "";
+  private readonly toasts: ToastQueue;
   private currentSnapshot: Snapshot | null = null;
   private actionStructureKey = "";
   private statusFingerprint = "";
   private activeTab: HudTab = "mission";
   private transfersUnlocked = false;
+  /** Last craft phase used for tab set — refresh tabs when it changes. */
+  private tabsPhaseKey = "";
   private selectedCraftId = 0;
   private lastContractToast = "";
-  private toastTimer: number | undefined;
   private victoryDismissed = false;
   private lastEndScreenKey = "";
+  private endscreenUntrap: (() => void) | null = null;
   private readonly tabAttention = new Set<HudTab>();
+  /** Marketplace filter: all | available | contested | body id */
+  private marketFilter = "all";
 
   constructor(
     private readonly content: GameContent,
     private readonly callbacks: PanelCallbacks,
   ) {
     this.statusEl = document.getElementById("status-panel")!;
+    this.priorityEl = document.getElementById("priority-strip")!;
+    this.timeToolbarEl = document.getElementById("time-toolbar")!;
     this.actionEl = document.getElementById("action-panel")!;
     this.eventEl = document.getElementById("event-log")!;
     this.phaseEl = document.getElementById("phase-label")!;
@@ -136,11 +137,32 @@ export class HudPanel {
       }
     });
     this.tabBar = document.getElementById("tab-bar")!;
-    this.toastEl = document.getElementById("toast")!;
+    this.toasts = new ToastQueue(document.getElementById("toast")!);
     this.bindActionDelegation();
+    this.bindTimeToolbar();
     this.bindTabs();
     this.bindEndScreen();
+    this.actionEl.addEventListener("change", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.id === "market-filter" && t instanceof HTMLSelectElement) {
+        this.marketFilter = t.value;
+        this.actionStructureKey = "";
+        if (this.currentSnapshot) this.renderActions(this.currentSnapshot);
+      }
+    });
     this.renderTabs();
+  }
+
+  /** Placeholder shimmer until the first snapshot arrives. */
+  showSkeleton(): void {
+    this.priorityEl.innerHTML = Array(5)
+      .fill('<span class="ps-item skeleton-ps"><label>…</label><strong>—</strong></span>')
+      .join("");
+    this.statusEl.innerHTML = `<div class="skeleton-grid">${Array(4)
+      .fill('<div class="skeleton-stat"></div>')
+      .join("")}</div>`;
+    this.actionEl.innerHTML =
+      '<div class="skeleton-block"></div><div class="skeleton-block short"></div>';
   }
 
   setTab(tab: HudTab): void {
@@ -176,6 +198,15 @@ export class HudPanel {
       : 0;
   }
 
+  /** Focus a fleet craft (e.g. from system-map “Focus craft”). */
+  setSelectedCraftId(id: number): void {
+    if (!Number.isFinite(id) || id === this.selectedCraftId) return;
+    this.selectedCraftId = id;
+    this.statusFingerprint = "";
+    this.actionStructureKey = "";
+    if (this.currentSnapshot) this.update(this.currentSnapshot);
+  }
+
   /** Contract the selected craft is serving (else the first active one). */
   private contractFor(
     s: Snapshot,
@@ -187,6 +218,190 @@ export class HudPanel {
       s.active_contracts[0] ??
       null
     );
+  }
+
+  private canAcceptMoreContracts(s: Snapshot): boolean {
+    return s.active_contracts.length < s.max_flights;
+  }
+
+  private craftsAvailableForContract(s: Snapshot): SpacecraftSnapshot[] {
+    const assigned = new Set(
+      s.active_contracts
+        .map((c) => c.assigned_craft_id)
+        .filter((id): id is number => id != null),
+    );
+    return s.spacecraft.filter((c) => !assigned.has(c.id));
+  }
+
+  private craftHasContract(s: Snapshot, craftId: number): boolean {
+    return s.active_contracts.some((c) => c.assigned_craft_id === craftId);
+  }
+
+  private resolveAcceptCraftId(s: Snapshot): number | undefined {
+    const available = this.craftsAvailableForContract(s);
+    if (available.length === 0) return undefined;
+    if (available.length === 1) return available[0]!.id;
+    const sel = document.getElementById(
+      "accept-craft-select",
+    ) as HTMLSelectElement | null;
+    const id = sel ? Number(sel.value) : this.selectedCraftId;
+    return available.some((c) => c.id === id) ? id : available[0]!.id;
+  }
+
+  private renderMarketplaceOffers(
+    s: Snapshot,
+    compact = false,
+  ): string[] {
+    if (!this.canAcceptMoreContracts(s)) return [];
+    const availableCrafts = this.craftsAvailableForContract(s);
+    const parts: string[] = [];
+    const slotHint = `<span class="hint">${s.active_contracts.length}/${s.max_flights} contract slots · ${s.active_flights}/${s.max_flights} flights active</span>`;
+    parts.push(
+      `<div class="field"><label>Contract marketplace</label>${slotHint}${
+        availableCrafts.length > 1
+          ? `<select id="accept-craft-select" title="Craft that will serve the contract">${availableCrafts
+              .map((c) => {
+                const body =
+                  s.bodies.find((b) => b.id === c.body_id)?.name ?? c.body_id;
+                return `<option value="${c.id}" ${c.id === this.selectedCraftId ? "selected" : ""}>${esc(c.name)} (${esc(body)})</option>`;
+              })
+              .join("")}</select>`
+          : availableCrafts.length === 1
+            ? `<p class="hint">Assigning to <strong>${esc(availableCrafts[0]!.name)}</strong></p>`
+            : `<p class="hint warn">No free craft — add a bus in design or decommission one.</p>`
+      }</div>`,
+    );
+    if (availableCrafts.length === 0) return parts;
+
+    if (s.market_enabled && (s.competitors?.length ?? 0) > 0) {
+      const rivalStrip = (s.competitors ?? [])
+        .map(
+          (r) =>
+            `<span class="chip rival" title="Focus: ${esc(r.focus_bodies.join(", ") || "any")}">${esc(r.name)} · ${r.contracts_won} wins</span>`,
+        )
+        .join(" ");
+      parts.push(
+        `<div class="market-pressure"><label>Market pressure</label><div class="rival-strip">${rivalStrip}</div></div>`,
+      );
+    }
+
+    const bodies = [
+      ...new Set(s.marketplace.map((o) => o.body_id).filter(Boolean)),
+    ].sort();
+    parts.push(`
+      <div class="field market-filter-row">
+        <label for="market-filter">Filter</label>
+        <select id="market-filter" title="Filter marketplace offers">
+          <option value="all" ${this.marketFilter === "all" ? "selected" : ""}>All</option>
+          <option value="available" ${this.marketFilter === "available" ? "selected" : ""}>Available</option>
+          <option value="contested" ${this.marketFilter === "contested" ? "selected" : ""}>Contested</option>
+          ${bodies
+            .map(
+              (b) =>
+                `<option value="body:${esc(b)}" ${this.marketFilter === `body:${b}` ? "selected" : ""}>${esc(b)}</option>`,
+            )
+            .join("")}
+        </select>
+      </div>
+    `);
+
+    const filtered = s.marketplace.filter((offer) => {
+      if (this.marketFilter === "available") return offer.available;
+      if (this.marketFilter === "contested") return Boolean(offer.contested_by);
+      if (this.marketFilter.startsWith("body:")) {
+        return offer.body_id === this.marketFilter.slice(5);
+      }
+      return true;
+    });
+
+    for (const offer of filtered) {
+      const repPct = Math.min(
+        100,
+        (s.reputation / Math.max(offer.reputation_required, 1)) * 100,
+      );
+      const orbitReq = orbitRequirementText(offer);
+      const contested = Boolean(offer.contested_by);
+      const claimed = Boolean(offer.claimed_by);
+      const contestEta =
+        contested && offer.contest_ends_sim_seconds != null
+          ? Math.max(0, offer.contest_ends_sim_seconds - s.sim_seconds)
+          : null;
+      const contestChip = contested
+        ? `<span class="chip contest">CONTESTED by ${esc(offer.contested_by!)}${contestEta != null ? ` · ${formatDuration(contestEta)}` : ""}</span>`
+        : "";
+      const claimedChip = claimed
+        ? `<span class="chip claimed">CLAIMED by ${esc(offer.claimed_by!)}</span>`
+        : "";
+      const rushBtn =
+        contested && offer.available && (offer.rush_bid_premium_usd ?? 0) > 0
+          ? `<button class="btn-rush-bid" data-contract="${esc(offer.template_id)}" title="Pay premium to snatch this contested offer">Rush bid +$${Math.round(offer.rush_bid_premium_usd!).toLocaleString()}</button>`
+          : "";
+      if (compact) {
+        parts.push(`
+          <button class="btn-contract ${contested ? "contested" : ""}" data-contract="${esc(offer.template_id)}" ${offer.available ? "" : "disabled"}>
+            ${esc(offer.name)} — $${offer.payout_usd.toLocaleString()}${offer.repeat ? " (repeat)" : ""}${contested ? " ⚡" : ""}
+          </button>
+          ${contestChip}${claimedChip}
+          ${rushBtn}
+          ${orbitReq ? `<p class="hint">${orbitReq}</p>` : ""}
+        `);
+      } else {
+        parts.push(`
+          <div class="offer-card ${offer.available ? "" : "locked"} ${contested ? "contested" : ""} ${claimed ? "claimed" : ""}">
+            <button class="btn-contract" data-contract="${esc(offer.template_id)}" ${offer.available ? "" : "disabled"}>
+              ${esc(offer.name)}
+            </button>
+            ${rushBtn}
+            ${offer.repeat ? `<span class="chip repeat">REPEAT — ×0.6 payout, no rep</span>` : ""}
+            ${contestChip}${claimedChip}
+            <p class="offer-meta">$${offer.payout_usd.toLocaleString()} · ${offer.downlink_mb} MB · ${offer.deadline_days} d · rep ${offer.reputation_required}${offer.min_distinct_stations > 0 ? ` · ${offer.min_distinct_stations} stations` : ""}${orbitReq ? ` · ${orbitReq}` : ""}</p>
+            <p class="offer-desc">${esc(offer.description)}</p>
+            ${!offer.available && !claimed ? `<div class="progress-bar thin"><div class="progress-fill" style="width:${repPct}%"></div></div>` : ""}
+          </div>
+        `);
+      }
+    }
+    return parts;
+  }
+
+  private renderActiveContractsPanel(s: Snapshot): string[] {
+    if (!s.active_contracts.length) return [];
+    const parts = [`<div class="field"><label>Active contracts</label></div>`];
+    for (const contract of s.active_contracts) {
+      const assigned = contract.assigned_craft_id;
+      const craftName = assigned
+        ? (s.spacecraft.find((c) => c.id === assigned)?.name ??
+          `Craft ${assigned}`)
+        : "Unassigned";
+      const craftOptions = s.spacecraft
+        .map((c) => {
+          const taken = s.active_contracts.find(
+            (k) =>
+              k.assigned_craft_id === c.id &&
+              k.template_id !== contract.template_id,
+          );
+          if (taken) return "";
+          return `<option value="${c.id}" ${assigned === c.id ? "selected" : ""}>${esc(c.name)}</option>`;
+        })
+        .join("");
+      parts.push(`
+        <div class="contract-card compact">
+          <div class="contract-head">
+            <span>${esc(contract.name)}</span>
+            <span class="deadline${contractDaysLeft(contract, s.sim_seconds) < 2 ? " urgent" : ""}">${contractDaysLeft(contract, s.sim_seconds).toFixed(1)} d</span>
+          </div>
+          <div class="progress-bar thin"><div class="progress-fill" style="width:${contractProgress(contract)}%"></div></div>
+          <div class="progress-label">${contract.downlink_mb_done.toFixed(0)} / ${contract.downlink_mb_required.toFixed(0)} MB · ${esc(craftName)}</div>
+          <label class="assign-row">Serve with
+            <select data-assign-contract="${esc(contract.template_id)}" title="Assign or reassign craft">
+              <option value="" ${assigned == null ? "selected" : ""}>Unassigned</option>
+              ${craftOptions}
+            </select>
+          </label>
+        </div>
+      `);
+    }
+    return parts;
   }
 
   private renderFleetStrip(s: Snapshot): void {
@@ -203,17 +418,23 @@ export class HudPanel {
         );
         const progress = contract
           ? Math.round(
-              (contract.downlink_mb_done / contract.downlink_mb_required) *
-                100,
+              (contract.downlink_mb_done / contract.downlink_mb_required) * 100,
             )
           : null;
-        const phaseGlyph =
-          c.phase === "Design" ? "🛠" : c.phase === "Transfer" ? "➜" : "🛰";
-        const alert = c.anomaly_label ? `<span class="chip-alert">!</span>` : "";
-        return `<button type="button" class="fleet-chip${selected?.id === c.id ? " selected" : ""}" data-craft="${c.id}" title="${esc(c.name)} — ${esc(body?.name ?? c.body_id)}${c.anomaly_label ? ` · ${esc(c.anomaly_label)}` : ""}">
-          ${phaseGlyph} ${esc(c.name)}
+        const phaseLabel =
+          c.phase === "Design"
+            ? "Design"
+            : c.phase === "Transfer"
+              ? "Transit"
+              : "Orbit";
+        const ariaLabel = `${c.name}, ${phaseLabel}, ${body?.name ?? c.body_id}${c.anomaly_label ? `, ${c.anomaly_label}` : ""}`;
+        const alert = c.anomaly_label
+          ? `<span class="chip-alert" aria-hidden="true">!</span>`
+          : "";
+        return `<button type="button" class="fleet-chip${selected?.id === c.id ? " selected" : ""}" data-craft="${c.id}" aria-label="${esc(ariaLabel)}" title="${esc(c.name)} — ${esc(body?.name ?? c.body_id)}${c.anomaly_label ? ` · ${esc(c.anomaly_label)}` : ""}">
+          <span class="chip-phase">${phaseLabel}</span> ${esc(c.name)}
           <span class="chip-body">${esc(body?.name ?? c.body_id)}</span>
-          ${progress != null ? `<span class="chip-progress"><div style="width:${progress}%"></div></span>` : ""}
+          ${progress != null ? `<span class="chip-progress" aria-hidden="true"><div style="width:${progress}%"></div></span>` : ""}
           ${alert}
         </button>`;
       })
@@ -222,28 +443,64 @@ export class HudPanel {
 
   update(snapshot: Snapshot): void {
     this.currentSnapshot = snapshot;
+    this.syncChromeLayout(snapshot);
     this.renderFleetStrip(snapshot);
-    if (snapshot.transfers_unlocked !== this.transfersUnlocked) {
+    const craft = this.selectedCraft(snapshot);
+    const phaseKey = `${craft?.phase ?? ""}|${snapshot.transfers_unlocked}|${snapshot.spacecraft.length}`;
+    if (
+      snapshot.transfers_unlocked !== this.transfersUnlocked ||
+      phaseKey !== this.tabsPhaseKey
+    ) {
       this.transfersUnlocked = snapshot.transfers_unlocked;
+      this.tabsPhaseKey = phaseKey;
       if (!this.transfersUnlocked && this.activeTab === "transfer") {
         this.activeTab = "mission";
+      }
+      // Redirect away from tabs that no longer apply.
+      if (
+        craft?.phase === "Design" &&
+        (this.activeTab === "ops" ||
+          this.activeTab === "orbit" ||
+          this.activeTab === "transfer")
+      ) {
+        this.activeTab = "mission";
+      } else if (craft?.phase === "Transfer" && this.activeTab === "ops") {
+        this.activeTab = this.transfersUnlocked ? "transfer" : "mission";
       }
       this.renderTabs();
     }
     const bodyName =
-      this.selectedCraft(snapshot) &&
-      this.selectedCraft(snapshot)?.body_id !== "earth"
-        ? snapshot.bodies.find(
-            (b) => b.id === this.selectedCraft(snapshot)?.body_id,
-          )
-            ?.name
+      craft && craft.body_id !== "earth"
+        ? snapshot.bodies.find((b) => b.id === craft.body_id)?.name
         : null;
-    this.phaseEl.textContent = `${snapshot.phase.replace(/_/g, " ")} · ${snapshot.game_mode}${bodyName ? ` · ${bodyName}` : ""}`;
+    const programsDone = snapshot.programs.filter((p) => p.completed).length;
+    const programsTotal = snapshot.programs.length;
+    const slots = `${snapshot.active_flights}/${snapshot.max_flights}`;
+    const programProgress =
+      programsTotal > 0 && snapshot.game_mode === "campaign"
+        ? ` · P${programsDone}/${programsTotal}`
+        : "";
+    this.phaseEl.textContent = `${snapshot.phase.replace(/_/g, " ")}${bodyName ? ` · ${bodyName}` : ""} · ${slots}${programProgress}`;
     this.renderStatus(snapshot);
+    this.renderTimeToolbar(snapshot);
     this.renderActions(snapshot);
     this.updateActionDynamicState(snapshot);
     this.maybeToastContract(snapshot);
     this.renderEndScreen(snapshot);
+  }
+
+  /**
+   * Show/hide chrome sections based on fleet size, log activity, and phase.
+   * Keeps the HUD from reserving empty vertical space.
+   */
+  private syncChromeLayout(s: Snapshot): void {
+    const multiFleet = s.spacecraft.length > 1;
+    this.fleetEl.classList.toggle("hud-section-hidden", !multiFleet);
+    this.fleetEl.setAttribute("aria-hidden", multiFleet ? "false" : "true");
+
+    const hasLog = this.eventEl.childElementCount > 0;
+    this.eventEl.classList.toggle("hud-section-hidden", !hasLog);
+    this.eventEl.setAttribute("aria-hidden", hasLog ? "false" : "true");
   }
 
   logEvent(message: string, className = ""): void {
@@ -257,6 +514,8 @@ export class HudPanel {
     while (this.eventEl.children.length > 30) {
       this.eventEl.lastChild?.remove();
     }
+    this.eventEl.classList.remove("hud-section-hidden");
+    this.eventEl.setAttribute("aria-hidden", "false");
   }
 
   logError(message: string): void {
@@ -264,16 +523,8 @@ export class HudPanel {
     this.showToast(message, "error");
   }
 
-  showToast(
-    message: string,
-    kind: "info" | "error" | "success" = "info",
-  ): void {
-    this.toastEl.textContent = message;
-    this.toastEl.className = `toast visible ${kind}`;
-    window.clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => {
-      this.toastEl.classList.remove("visible");
-    }, 4000);
+  showToast(message: string, kind: ToastKind = "info"): void {
+    this.toasts.show(message, kind);
   }
 
   private maybeToastContract(s: Snapshot): void {
@@ -305,6 +556,9 @@ export class HudPanel {
       .getElementById("endscreen-continue")
       ?.addEventListener("click", () => {
         this.victoryDismissed = true;
+        this.endscreenUntrap?.();
+        this.endscreenUntrap = null;
+        releaseFocus();
         document.getElementById("endscreen")?.classList.add("hidden");
       });
   }
@@ -319,10 +573,16 @@ export class HudPanel {
 
     if (!isEnd) {
       this.victoryDismissed = false;
+      this.endscreenUntrap?.();
+      this.endscreenUntrap = null;
+      releaseFocus();
       el.classList.add("hidden");
       return;
     }
     if (s.phase === "victory" && this.victoryDismissed) {
+      this.endscreenUntrap?.();
+      this.endscreenUntrap = null;
+      releaseFocus();
       el.classList.add("hidden");
       return;
     }
@@ -331,9 +591,18 @@ export class HudPanel {
     const body = document.getElementById("endscreen-body")!;
     const continueBtn = document.getElementById("endscreen-continue")!;
     if (s.phase === "victory") {
+      const done = s.programs.filter((p) => p.completed).map((p) => p.name);
+      const pr = s.prestige;
+      const rankLine = pr
+        ? ` Prestige: ${pr.rank_label} (score ${pr.score}).`
+        : "";
       title.textContent = "Victory!";
       body.textContent =
-        "All contracts completed — Satellite Inc is the market leader. Keep flying or start over.";
+        (done.length > 0
+          ? `All programs completed (${done.join(", ")}) — Satellite Inc is an interplanetary agency.`
+          : "All programs completed — Satellite Inc is an interplanetary agency.") +
+        rankLine +
+        " Keep flying or start over.";
     } else if (s.outcome === "bankrupt") {
       title.textContent = "Bankrupt";
       body.textContent =
@@ -347,6 +616,9 @@ export class HudPanel {
     el.classList.toggle("victory", s.phase === "victory");
     el.classList.toggle("game-over", s.phase === "game_over");
     el.classList.remove("hidden");
+    this.endscreenUntrap?.();
+    this.endscreenUntrap = trapFocus(el);
+    document.getElementById("endscreen-restart")?.focus();
   }
 
   private bindTabs(): void {
@@ -357,24 +629,56 @@ export class HudPanel {
       if (!btn) return;
       this.setTab(btn.dataset.tab as HudTab);
     });
+    this.tabBar.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const tabs = Array.from(
+        this.tabBar.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+      );
+      const idx = tabs.findIndex((t) => t === document.activeElement);
+      if (idx === -1) return;
+      e.preventDefault();
+      const next =
+        e.key === "ArrowRight"
+          ? tabs[(idx + 1) % tabs.length]!
+          : tabs[(idx - 1 + tabs.length) % tabs.length]!;
+      this.setTab(next.dataset.tab as HudTab);
+      next.focus();
+    });
   }
 
   private renderTabs(): void {
+    const craft = this.currentSnapshot
+      ? this.selectedCraft(this.currentSnapshot)
+      : null;
+    const flying =
+      craft?.phase === "OnOrbit" || craft?.phase === "Transfer";
+    // Only show tabs that matter for the current phase (Mission + Company always).
     const tabs: { id: HudTab; label: string }[] = [
       { id: "mission", label: "Mission" },
-      { id: "ops", label: "Ops" },
-      { id: "orbit", label: "Orbit" },
-      ...(this.transfersUnlocked
+      ...(flying ? [{ id: "ops" as HudTab, label: "Ops" }] : []),
+      ...(craft?.phase === "OnOrbit"
+        ? [{ id: "orbit" as HudTab, label: "Orbit" }]
+        : []),
+      ...(this.transfersUnlocked && craft?.phase !== "Design"
         ? [{ id: "transfer" as HudTab, label: "Transfer" }]
         : []),
       { id: "company", label: "Company" },
     ];
+    // If active tab was removed, fall back to Mission.
+    if (!tabs.some((t) => t.id === this.activeTab)) {
+      this.activeTab = "mission";
+    }
+    this.tabBar.setAttribute("role", "tablist");
     this.tabBar.innerHTML = tabs
-      .map(
-        (t) =>
-          `<button type="button" class="tab${this.activeTab === t.id ? " active" : ""}${this.tabAttention.has(t.id) ? " attention" : ""}" data-tab="${t.id}">${t.label}</button>`,
-      )
+      .map((t) => {
+        const active = this.activeTab === t.id;
+        return `<button type="button" role="tab" id="tab-${t.id}" class="tab${active ? " active" : ""}${this.tabAttention.has(t.id) ? " attention" : ""}" data-tab="${t.id}" aria-selected="${active}" aria-controls="action-panel" tabindex="${active ? "0" : "-1"}">${t.label} <span class="tab-kbd" aria-hidden="true">${TAB_KBD[t.id]}</span></button>`;
+      })
       .join("");
+    this.tabBar.style.setProperty(
+      "--tab-count",
+      String(Math.min(tabs.length, 5)),
+    );
   }
 
   private computeStatusFingerprint(s: Snapshot): string {
@@ -394,13 +698,19 @@ export class HudPanel {
       c?.anomaly_label ?? "",
       c?.command_queue.length ?? "",
       contract?.downlink_mb_done.toFixed(0) ?? "",
-      (this.contractFor(s, c)?.orbit_ok ?? null) ?? "",
+      this.contractFor(s, c)?.orbit_ok ?? "",
       s.outcome ?? "",
       s.ops_cost_usd_per_day.toFixed(0),
       c ? Math.round((c.power_wh / c.battery_wh_capacity) * 50) : "",
       c ? Math.round((c.buffer_mb / c.buffer_capacity_mb) * 50) : "",
       c?.propellant_kg.toFixed(2) ?? "",
-      dataFlowStatus(s)?.text ?? "",
+      c?.solar_flux.toFixed(2) ?? "",
+      c?.elements
+        ? `${c.elements.inclination_deg.toFixed(1)}:${c.elements.raan_deg.toFixed(0)}`
+        : "",
+      dataFlowStatus(s, c, this.contractFor(s, c))?.text ?? "",
+      c ? isDownlinkLinkLive(c) : "",
+      c?.downlink_station_id ?? "",
       Math.round(bankruptcyRunwayDays(s) ?? -1),
       (c?.station_status ?? [])
         .map(
@@ -409,6 +719,14 @@ export class HudPanel {
             `${st.station_id}:${st.in_pass}:${st.elevation_deg.toFixed(0)}:${Math.round((st.next_pass_in_seconds ?? -1) / 15)}`,
         )
         .join(","),
+      s.ground_stations.map((g) => `${g.id}:${g.unlocked ? 1 : 0}`).join(","),
+      s.active_world_event
+        ? `${s.active_world_event.event_id}:${Math.round((s.active_world_event.ends_at_sim_seconds - s.sim_seconds) / 30)}`
+        : "",
+      s.marketplace.filter((o) => o.contested_by).length,
+      s.next_event_sim_seconds == null
+        ? ""
+        : Math.round((s.next_event_sim_seconds - s.sim_seconds) / 30),
     ].join("|");
   }
 
@@ -418,28 +736,66 @@ export class HudPanel {
     this.statusFingerprint = fp;
 
     const craft = this.selectedCraft(s);
-    const contract = this.contractFor(s, this.selectedCraft(s));
-    const nextPass = nextPassStation(s);
+    const contract = this.contractFor(s, craft);
+    const nextPass = nextPassStation(s, craft);
+    const phase = craft?.phase;
+    const onOrbit = phase === "OnOrbit";
+    const inTransfer = phase === "Transfer";
+    const flying = onOrbit || inTransfer;
     const craftBodyId = craft?.body_id ?? "earth";
+    const selectedDish = craft?.downlink_station_id ?? null;
 
-    const stationRows = (craft?.station_status ?? [])
-      .map((st) => {
-        const info = s.ground_stations.find((g) => g.id === st.station_id);
-        const name = info?.name ?? st.station_id;
-        const isDsnLink = (info?.dsn ?? false) && info?.body_id !== craftBodyId;
-        const passEta =
-          st.in_pass || st.next_pass_in_seconds == null
-            ? ""
-            : `<span class="stat-sub">next ${formatDuration(st.next_pass_in_seconds)}</span>`;
-        const idle = isDsnLink ? "NO LINK" : `${st.elevation_deg.toFixed(0)}°`;
-        const active = isDsnLink ? "LINK" : "PASS";
-        return `<div class="stat"><label>${esc(name)}</label><strong class="${st.in_pass ? "pass-active" : ""}">${st.in_pass ? active : idle}</strong><span class="stat-sub">${st.bandwidth_mbps.toFixed(1)} Mbps</span>${passEta}</div>`;
-      })
-      .join("");
+    // Stations: only rows that are in pass or next soon (hide idle clutter).
+    // Selected downlink dish is always listed when present.
+    let stationRows = "";
+    if (craft && onOrbit) {
+      const ranked = craft.station_status
+        .map((st, i) => {
+          const selected = st.station_id === selectedDish;
+          const priority = st.in_pass
+            ? 0
+            : selected
+              ? 1
+              : st.next_pass_in_seconds != null && st.next_pass_in_seconds < 3600
+                ? 2
+                : 9;
+          return { st, selected, priority, i };
+        })
+        .filter(
+          (row) =>
+            row.priority < 9 ||
+            row.st.in_pass ||
+            (row.st.next_pass_in_seconds != null &&
+              row.st.next_pass_in_seconds < 3600),
+        )
+        .sort((a, b) => a.priority - b.priority || a.i - b.i)
+        .slice(0, 4);
+
+      stationRows = ranked
+        .map(({ st, selected }) => {
+          const info = s.ground_stations.find((g) => g.id === st.station_id);
+          const name = info?.name ?? st.station_id;
+          const isDsnLink =
+            (info?.dsn ?? false) && info?.body_id !== craftBodyId;
+          const passEta =
+            st.in_pass || st.next_pass_in_seconds == null
+              ? ""
+              : `<span class="stat-sub">next ${formatDuration(st.next_pass_in_seconds)}</span>`;
+          const idle = isDsnLink
+            ? "NO LINK"
+            : st.elevation_deg > -89
+              ? `${st.elevation_deg.toFixed(0)}°`
+              : "—";
+          const active = isDsnLink ? "LINK" : "PASS";
+          const mark = selected ? " ★" : "";
+          return `<div class="stat${selected ? " station-selected" : ""}"><label>${esc(name)}${mark}</label><strong class="${st.in_pass ? "pass-active" : ""}">${st.in_pass ? active : idle}</strong><span class="stat-sub">${st.bandwidth_mbps.toFixed(1)} Mbps</span>${passEta}</div>`;
+        })
+        .join("");
+    }
 
     const lightDelayLine =
-      craft && craft.light_delay_seconds > 1.0
-        ? `<div class="stat"><label>Light delay</label><strong>${craft.light_delay_seconds < 120 ? `${craft.light_delay_seconds.toFixed(0)} s` : `${(craft.light_delay_seconds / 60).toFixed(1)} min`}</strong><span class="stat-sub">one-way to Earth</span></div>`
+      craft && flying && craft.light_delay_seconds > 1.0
+        ? `<div class="stat"><label>OWLT</label><strong>${craft.light_delay_seconds < 120 ? `${craft.light_delay_seconds.toFixed(0)} s` : `${(craft.light_delay_seconds / 60).toFixed(1)} min`}</strong></div>`
         : "";
 
     const orbitReq = contract ? orbitRequirementText(contract) : "";
@@ -450,70 +806,144 @@ export class HudPanel {
           : `<div class="orbit-spec ok">Orbit OK (${orbitReq})</div>`
         : "";
 
+    // No "pick a contract" filler in design — Mission tab already handles it.
     const contractBlock = contract
       ? `<div class="contract-card">
           <div class="contract-head">
             <span>${esc(contract.name)}</span>
-            <span class="deadline${contractDaysLeft(contract, s.sim_seconds) < 2 ? " urgent" : ""}">${contractDaysLeft(contract, s.sim_seconds).toFixed(1)} d left</span>
+            <span class="deadline${contractDaysLeft(contract, s.sim_seconds) < 2 ? " urgent" : ""}">${contractDaysLeft(contract, s.sim_seconds).toFixed(1)} d</span>
           </div>
           ${orbitSpecLine}
           <div class="progress-bar"><div class="progress-fill" style="width:${contractProgress(contract)}%"></div></div>
-          <div class="progress-label">${contract.downlink_mb_done.toFixed(0)} / ${contract.downlink_mb_required.toFixed(0)} MB · +$${contract.payout_usd.toLocaleString()} · +${contract.reputation_reward} rep</div>
-          ${contract.min_distinct_stations > 0 ? `<div class="progress-label">Stations: ${contract.stations_used.length} / ${contract.min_distinct_stations} (${esc(contract.stations_used.join(", ")) || "none yet"})</div>` : ""}
+          <div class="progress-label">${contract.downlink_mb_done.toFixed(0)} / ${contract.downlink_mb_required.toFixed(0)} MB</div>
         </div>`
-      : `<p class="hint">No active contract — pick one in Mission tab.</p>`;
+      : "";
 
-    const flow = dataFlowStatus(s);
+    const flow = dataFlowStatus(s, craft, contract);
     const flowLine =
-      flow && craft?.phase === "OnOrbit"
+      flow && onOrbit
         ? `<div class="orbit-spec ${flow.kind === "bad" ? "bad" : flow.kind === "ok" ? "ok" : "warn"}">${flow.text}</div>`
         : "";
 
-    const craftBlock = craft
-      ? `<div class="stat-grid">
-          <div class="stat"><label>Bus</label><strong>${esc(craft.bus_name)}</strong></div>
-          <div class="stat"><label>Altitude</label><strong>${craft.altitude_km.toFixed(0)} km</strong></div>
-          ${gauge("Battery", craft.power_wh, craft.battery_wh_capacity, "Wh", { lowIsBad: true })}
-          ${gauge("Buffer", craft.buffer_mb, craft.buffer_capacity_mb, "MB", { highIsWarn: true })}
-          ${gauge("Propellant", craft.propellant_kg, craft.propellant_capacity_kg, "kg", { lowIsBad: true })}
-          <div class="stat"><label>Δv left</label><strong>${(craft.delta_v_remaining_km_s * 1000).toFixed(0)} m/s</strong></div>
-          <div class="stat"><label>Sunlight</label><strong class="${craft.in_sunlight ? "pass-active" : ""}">${craft.in_sunlight ? "YES" : "Eclipse"}</strong></div>
-          <div class="stat"><label>Downlink</label><strong>${craft.downlink_active ? `${(craft.downlink_rate_mb_s * 1000).toFixed(0)} KB/s` : "Off"}</strong></div>
-          <div class="stat"><label>Imaging</label><strong>${craft.imaging_rate_mb_s.toFixed(1)} MB/s</strong></div>
-          <div class="stat"><label>Payload</label><strong>${payloadModeLabel(craft.payload_mode)}</strong></div>
-          <div class="stat"><label>Apsis</label><strong class="${craft.at_apsis ? "pass-active" : ""}">${craft.at_apsis ? "READY" : "—"}</strong></div>
+    // Full craft telemetry only while flying; design stays minimal.
+    let craftBlock = "";
+    if (craft && flying) {
+      const dlLive = isDownlinkLinkLive(craft);
+      craftBlock = `<div class="stat-grid">
+          <div class="stat"><label>Alt</label><strong>${craft.altitude_km.toFixed(0)} km</strong></div>
+          ${gauge("Bat", craft.power_wh, craft.battery_wh_capacity, "Wh", { lowIsBad: true })}
+          ${gauge("Buf", craft.buffer_mb, craft.buffer_capacity_mb, "MB", { highIsWarn: true })}
+          ${onOrbit ? gauge("Prop", craft.propellant_kg, craft.propellant_capacity_kg, "kg", { lowIsBad: true }) : ""}
+          ${onOrbit ? `<div class="stat"><label>Sun</label><strong class="${craft.in_sunlight ? "pass-active" : ""}">${craft.in_sunlight ? "YES" : "Ecl"}</strong></div>` : ""}
+          ${lightDelayLine}
+          ${onOrbit ? `<div class="stat"><label>DL</label><strong class="${craft.downlink_active && dlLive ? "pass-active" : ""}">${downlinkRateLabel(craft)}</strong></div>` : ""}
+          ${onOrbit ? `<div class="stat"><label>Mode</label><strong>${payloadModeLabel(craft.payload_mode)}</strong></div>` : ""}
         </div>
         ${flowLine}
-        ${craft.anomaly_label ? `<div class="alert warn">⚠ ${esc(craft.anomaly_label)} — queue Clear anomaly or Safe mode at a station</div>` : ""}
-        ${craft.command_queue.length ? `<ul class="queue-list">${craft.command_queue.map((q) => `<li>${esc(commandLabel(q.command))} → ${esc(q.station_id)}</li>`).join("")}</ul>` : ""}`
-      : "";
+        ${craft.anomaly_label ? `<div class="alert warn">⚠ ${esc(craft.anomaly_label)}</div>` : ""}
+        ${craft.command_queue.length ? `<ul class="queue-list">${craft.command_queue.map((q) => `<li>${esc(commandLabel(q.command))} → ${esc(q.station_id)}</li>`).join("")}</ul>` : ""}`;
+    } else if (craft && phase === "Design") {
+      craftBlock = `<p class="hint status-hint">${esc(craft.bus_name)} · design · ${craft.target_altitude_km.toFixed(0)} km / ${craft.target_inclination_deg.toFixed(0)}°</p>`;
+    }
 
-    const nextPassBlock = nextPass
-      ? `<p class="hint pass-hint">Next pass candidate: <strong>${esc(nextPass.name)}</strong> (${nextPass.elevation.toFixed(0)}°)</p>`
-      : craft?.phase === "OnOrbit"
-        ? `<p class="hint">No station above horizon — increase time accel or wait.</p>`
+    const nextPassBlock =
+      onOrbit && nextPass
+        ? `<p class="hint pass-hint">Next pass: <strong>${esc(nextPass.name)}</strong>${nextPass.etaSeconds != null ? ` · ${formatDuration(nextPass.etaSeconds)}` : ""}</p>`
         : "";
 
     const runway = bankruptcyRunwayDays(s);
+    const runwayDays =
+      runway != null && (runway < 45 || s.cash_usd < 0) ? runway : null;
     const runwayBanner =
-      runway != null && (runway < 30 || s.cash_usd < 0)
-        ? `<div class="alert danger">💸 Bankrupt in ~${Math.max(0, runway).toFixed(0)} d at current burn — complete a contract or decommission</div>`
+      runwayDays != null
+        ? `<div class="alert danger">💸 ~${Math.max(0, runwayDays).toFixed(0)} d runway</div>`
         : "";
 
-    this.statusEl.innerHTML = `
-      <div class="stat-grid">
-        <div class="stat"><label>Cash</label><strong class="${s.cash_usd < 0 ? "negative" : ""}">$${s.cash_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></div>
-        ${gauge("Reputation", s.reputation, 100, "", {})}
-        <div class="stat"><label>Sim Time</label><strong>Day ${s.sim_days.toFixed(2)}</strong></div>
-        <div class="stat"><label>Time Accel</label><strong>${s.time_accel === 0 ? "PAUSED" : `${s.time_accel.toFixed(0)}×`}</strong></div>
-        ${s.ops_cost_usd_per_day > 0 ? `<div class="stat"><label>Ops cost</label><strong>$${s.ops_cost_usd_per_day.toLocaleString(undefined, { maximumFractionDigits: 0 })}/day</strong></div>` : ""}
-      </div>
-      ${runwayBanner}
-      ${contractBlock}
-      ${craftBlock}
-      ${nextPassBlock}
-      <div class="stat-grid stations">${lightDelayLine}${stationRows}</div>
-    `;
+    const contestedCount = s.marketplace.filter((o) => o.contested_by).length;
+    const nextEventEta =
+      s.next_event_sim_seconds != null
+        ? formatDuration(Math.max(0, s.next_event_sim_seconds - s.sim_seconds))
+        : null;
+    const wx = s.active_world_event;
+    const wxEta = wx
+      ? formatDuration(Math.max(0, wx.ends_at_sim_seconds - s.sim_seconds))
+      : "";
+    const weatherBanner = wx
+      ? `<div class="alert warn weather-banner" title="${esc(wx.description)}">🌩 <strong>${esc(wx.name)}</strong> · ${wxEta}</div>`
+      : "";
+
+    // Global telemetry lives in the top bar (outside the left dock).
+    const stripItems = [
+      `<span class="ps-item"><label>Cash</label><strong class="${s.cash_usd < 0 ? "negative" : ""}">$${s.cash_usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>`,
+      `<span class="ps-item"><label>Rep</label><strong>${s.reputation.toFixed(0)}</strong></span>`,
+      `<span class="ps-item"><label>Day</label><strong>${s.sim_days.toFixed(1)}</strong></span>`,
+      `<span class="ps-item"><label>Spd</label><strong>${s.time_accel === 0 ? "❚❚" : `${s.time_accel.toFixed(0)}×`}</strong></span>`,
+      `<span class="ps-item"><label>Slots</label><strong>${s.active_flights}/${s.max_flights}</strong></span>`,
+    ];
+    if (runwayDays != null) {
+      stripItems.push(
+        `<span class="ps-item"><label>Runway</label><strong class="warn-text">~${Math.max(0, runwayDays).toFixed(0)}d</strong></span>`,
+      );
+    }
+    if (nextEventEta) {
+      stripItems.push(
+        `<span class="ps-item"><label>Next</label><strong>${nextEventEta}</strong></span>`,
+      );
+    }
+    if (contestedCount > 0) {
+      stripItems.push(
+        `<span class="ps-item"><label>Bid</label><strong class="warn-text">${contestedCount}</strong></span>`,
+      );
+    }
+    if (wx) {
+      stripItems.push(
+        `<span class="ps-item"><label>Wx</label><strong class="warn-text">${esc(wx.name)}</strong></span>`,
+      );
+    }
+    if (s.ops_cost_usd_per_day > 0) {
+      stripItems.push(
+        `<span class="ps-item"><label>Ops</label><strong>$${(s.ops_cost_usd_per_day / 1000).toFixed(1)}k/d</strong></span>`,
+      );
+    }
+    this.priorityEl.innerHTML = stripItems.join("");
+
+    // Contextual dock status: alerts, contract, craft telemetry, stations.
+    const statusHtml = [
+      weatherBanner,
+      runwayBanner,
+      contractBlock,
+      craftBlock,
+      nextPassBlock,
+      stationRows ? `<div class="stat-grid stations">${stationRows}</div>` : "",
+    ]
+      .filter(Boolean)
+      .join("");
+    this.statusEl.innerHTML = statusHtml;
+    const hasStatus = statusHtml.length > 0;
+    this.statusEl.classList.toggle("hud-section-hidden", !hasStatus);
+    this.statusEl.setAttribute("aria-hidden", hasStatus ? "false" : "true");
+  }
+
+  /** Time-accel lives in the top bar; rebuild only when presets need a repaint. */
+  private renderTimeToolbar(s: Snapshot): void {
+    // Structure is fixed; only active state changes every tick via updateActionDynamicState.
+    const key = "accel-presets";
+    if (this.timeToolbarKey === key) return;
+    this.timeToolbarKey = key;
+    this.timeToolbarEl.innerHTML = ACCEL_PRESETS.map(
+      (p) =>
+        `<button type="button" class="accel-btn${s.time_accel === p ? " active" : ""}" data-accel="${p}" title="${p === 0 ? "Pause (Space)" : `${p}× speed`}">${p === 0 ? "⏸" : `${p}×`}</button>`,
+    ).join("");
+  }
+
+  private bindTimeToolbar(): void {
+    this.timeToolbarEl.addEventListener("click", (e) => {
+      const target = (e.target as HTMLElement).closest("button");
+      if (!target || target.disabled) return;
+      if (target.classList.contains("accel-btn")) {
+        this.callbacks.onTimeAccel(Number(target.dataset.accel));
+      }
+    });
   }
 
   private renderActions(s: Snapshot): void {
@@ -522,50 +952,108 @@ export class HudPanel {
     if (structureKey === this.actionStructureKey) return;
     this.actionStructureKey = structureKey;
 
+    const craft = this.selectedCraft(s);
     const parts: string[] = [];
 
-    parts.push(`
-      <div class="toolbar">
-        <div class="field">
-          <label>Time</label>
-          <div class="accel-row">
-            ${ACCEL_PRESETS.map(
-              (p) =>
-                `<button type="button" class="accel-btn" data-accel="${p}" title="${p === 0 ? "Pause (Space)" : `${p}× speed`}">${p === 0 ? "⏸" : `${p}×`}</button>`,
-            ).join("")}
-          </div>
-        </div>
-        <label class="toggle">
+    const flying =
+      craft?.phase === "OnOrbit" || craft?.phase === "Transfer";
+    // Contextual dock toolbar (accel lives in #time-toolbar top bar).
+    const dockTools: string[] = [];
+    if (flying) {
+      dockTools.push(`<label class="toggle compact-toggle">
           <input type="checkbox" id="auto-downlink" ${this.callbacks.getAutoDownlink() ? "checked" : ""} />
-          Auto-downlink on pass
-        </label>
-        ${
-          s.next_event_sim_seconds != null
-            ? `<button id="btn-warp-next" data-warp="${s.next_event_sim_seconds}" title="Warp to the fleet's next pass, window, arrival or deadline">⏭ Next event (${formatDuration(s.next_event_sim_seconds - s.sim_seconds)})</button>`
-            : ""
-        }
-      </div>
-    `);
-
+          Auto-DL
+        </label>`);
+    }
+    if (s.next_event_sim_seconds != null) {
+      dockTools.push(
+        `<button id="btn-warp-next" data-warp="${s.next_event_sim_seconds}" title="Warp to next fleet event">⏭ ${formatDuration(s.next_event_sim_seconds - s.sim_seconds)}</button>`,
+      );
+    }
+    if (dockTools.length) {
+      parts.push(`<div class="toolbar dock-toolbar">${dockTools.join("")}</div>`);
+    }
     switch (this.activeTab) {
       case "mission":
         parts.push(...this.renderMissionTab(s));
         break;
       case "ops":
-        parts.push(...this.renderOpsTab(s));
+        parts.push(...renderOpsTab(s, craft));
         break;
       case "orbit":
-        parts.push(...this.renderOrbitTab(s));
+        parts.push(...renderOrbitTab(s, craft));
         break;
       case "transfer":
-        parts.push(...this.renderTransferTab(s));
+        parts.push(...renderTransferTab(s, craft));
         break;
       case "company":
-        parts.push(...this.renderCompanyTab(s));
+        parts.push(
+          ...renderCompanyTab(s, this.content, {
+            autoDownlink: this.callbacks.getAutoDownlink(),
+            autoPauseArrival: this.callbacks.getAutoPauseArrival(),
+            autoPauseAnomaly: this.callbacks.getAutoPauseAnomaly(),
+            showTleRefs: this.callbacks.getShowTleRefs(),
+            showLegend: this.callbacks.getShowLegend(),
+          }),
+        );
         break;
     }
 
     this.actionEl.innerHTML = parts.join("");
+  }
+
+  /** Compact Earth→Jupiter spine for the Mission tab. */
+  private renderCareerPath(s: Snapshot): string {
+    const nodes = s.programs
+      .map((p, i) => {
+        const short = p.name.replace(/\s*Program\s*/i, "").trim() || p.name;
+        let state = "locked";
+        let mark = "○";
+        if (p.completed) {
+          state = "done";
+          mark = "●";
+        } else if (p.unlocked) {
+          state = "active";
+          mark = "◉";
+        }
+        const canBuy =
+          s.game_mode === "campaign" &&
+          !p.unlocked &&
+          !p.completed &&
+          s.reputation >= p.reputation_required &&
+          p.keystone_done &&
+          p.tech_done &&
+          s.cash_usd >= p.buyin_usd;
+        const title = p.completed
+          ? `${p.name} complete`
+          : p.unlocked
+            ? `${p.name} active`
+            : canBuy
+              ? `Unlock ${p.name} — $${p.buyin_usd.toLocaleString()}`
+              : !p.keystone_done
+                ? `Needs keystone ${p.requires_keystone ?? ""}`
+                : !p.tech_done
+                  ? `Needs tech ${p.requires_tech ?? ""}`
+                  : s.reputation < p.reputation_required
+                    ? `Needs rep ${p.reputation_required}`
+                    : `Needs $${p.buyin_usd.toLocaleString()}`;
+        const sep =
+          i < s.programs.length - 1
+            ? `<span class="career-sep" aria-hidden="true">─</span>`
+            : "";
+        const inner = `<span class="career-mark">${mark}</span><span class="career-label">${esc(short)}</span>`;
+        const node = canBuy
+          ? `<button type="button" class="career-node buyable btn-unlock-program" data-program="${esc(p.id)}" title="${esc(title)}">${inner}</button>`
+          : `<span class="career-node ${state}" title="${esc(title)}">${inner}</span>`;
+        return `${node}${sep}`;
+      })
+      .join("");
+    const done = s.programs.filter((p) => p.completed).length;
+    return `<div class="field career-path" aria-label="Career path">
+      <label>Career · ${done}/${s.programs.length} programs</label>
+      <div class="career-strip">${nodes}</div>
+      <p class="hint">One agency path: complete body contracts → unlock the next world.</p>
+    </div>`;
   }
 
   private renderMissionTab(s: Snapshot): string[] {
@@ -590,17 +1078,9 @@ export class HudPanel {
       `);
     }
 
-    const scenarios = this.content.scenarios ?? [];
-    if (scenarios.length) {
-      parts.push(`<div class="field"><label>Scenarios</label><select id="scenario-select">
-        ${scenarios.map((sc) => `<option value="${esc(sc.id)}">${esc(sc.name)}${sc.body_id && sc.body_id !== "earth" ? ` [${esc(sc.body_id)}]` : ""}</option>`).join("")}
-      </select></div>`);
-      parts.push(
-        `<button id="btn-load-scenario" class="primary">Load scenario</button>`,
-      );
-      parts.push(
-        `<p class="hint" id="scenario-desc">${esc(scenarios[0]?.description ?? "")}</p>`,
-      );
+    // Unified career spine (programs), not a multi-scenario picker.
+    if (s.programs.length > 0) {
+      parts.push(this.renderCareerPath(s));
     }
 
     if (!craft || s.phase === "design" || craft.phase === "Design") {
@@ -633,57 +1113,41 @@ export class HudPanel {
         `);
       }
 
+      parts.push(...this.renderActiveContractsPanel(s));
+      parts.push(...this.renderMarketplaceOffers(s));
+
+      if (craft && this.craftHasContract(s, craft.id)) {
+        const cost =
+          this.content.buses.find((b) => b.id === craft.bus_id)
+            ?.launch_cost_usd ?? 0;
+        const atCap = s.active_flights >= s.max_flights;
+        parts.push(`
+          <button id="btn-launch" class="primary" ${s.cash_usd < cost || atCap ? "disabled" : ""} title="${atCap ? `Mission control full (${s.active_flights}/${s.max_flights})` : ""}">
+            Launch ${esc(craft.name)} — $${cost.toLocaleString()}
+          </button>
+          <p class="hint">Checklist: bus configured · contract accepted · funds available · flight slot free</p>
+        `);
+      }
+    } else {
+      parts.push(...this.renderActiveContractsPanel(s));
+
       if (!s.active_contracts.length) {
         parts.push(
-          `<div class="field"><label>Contract marketplace</label></div>`,
+          `<div class="success-banner">Contract complete! Choose your next mission.</div>`,
         );
-        for (const offer of s.marketplace) {
-          const repPct = Math.min(
-            100,
-            (s.reputation / Math.max(offer.reputation_required, 1)) * 100,
-          );
-          const orbitReq = orbitRequirementText(offer);
-          parts.push(`
-            <div class="offer-card ${offer.available ? "" : "locked"}">
-              <button class="btn-contract" data-contract="${esc(offer.template_id)}" ${offer.available ? "" : "disabled"}>
-                ${esc(offer.name)}
-              </button>
-              ${offer.repeat ? `<span class="chip repeat">REPEAT — ×0.6 payout, no rep</span>` : ""}
-              <p class="offer-meta">$${offer.payout_usd.toLocaleString()} · ${offer.downlink_mb} MB · ${offer.deadline_days} d · rep ${offer.reputation_required}${offer.min_distinct_stations > 0 ? ` · ${offer.min_distinct_stations} stations` : ""}${orbitReq ? ` · ${orbitReq}` : ""}</p>
-              <p class="offer-desc">${esc(offer.description)}</p>
-              ${!offer.available ? `<div class="progress-bar thin"><div class="progress-fill" style="width:${repPct}%"></div></div>` : ""}
-            </div>
-          `);
-        }
-      } else {
-        const cost =
-          this.content.buses.find((b) => b.id === craft?.bus_id)
-            ?.launch_cost_usd ?? 0;
-        parts.push(`
-          <button id="btn-launch" class="primary" ${s.cash_usd < cost ? "disabled" : ""}>
-            Launch — $${cost.toLocaleString()}
-          </button>
-          <p class="hint">Checklist: bus configured · contract accepted · funds available</p>
-        `);
       }
-    } else if (!s.active_contracts.length) {
-      parts.push(
-        `<div class="success-banner">Contract complete! Choose your next mission.</div>`,
-      );
-      for (const offer of s.marketplace) {
-        const orbitReq = orbitRequirementText(offer);
-        parts.push(`
-          <button class="btn-contract" data-contract="${esc(offer.template_id)}" ${offer.available ? "" : "disabled"}>
-            ${esc(offer.name)} — $${offer.payout_usd.toLocaleString()}${offer.repeat ? " (repeat)" : ""}
-          </button>
-          ${orbitReq ? `<p class="hint">${orbitReq}</p>` : ""}
-        `);
+      parts.push(...this.renderMarketplaceOffers(s, !s.active_contracts.length));
+
+      if (s.active_contracts.length && !this.canAcceptMoreContracts(s)) {
+        parts.push(
+          `<p class="hint">Satellite on orbit. Use Ops and Orbit tabs during the mission.</p>`,
+        );
+      } else if (s.active_contracts.length) {
+        parts.push(
+          `<p class="hint">More contract slots available — accept another mission or focus the selected craft in Ops.</p>`,
+        );
       }
-      parts.push(this.decommissionButton(craft.bus_id));
-    } else {
-      parts.push(
-        `<p class="hint">Satellite on orbit. Use Ops and Orbit tabs during the mission.</p>`,
-      );
+      // else-branch: craft is non-null (design/on-orbit gate above).
       parts.push(this.decommissionButton(craft.bus_id));
     }
     return parts;
@@ -698,242 +1162,6 @@ export class HudPanel {
     const cost =
       this.content.buses.find((b) => b.id === busId)?.launch_cost_usd ?? 0;
     return Math.round(cost * 0.15);
-  }
-
-  private renderOpsTab(s: Snapshot): string[] {
-    const parts: string[] = [];
-    const craft = this.selectedCraft(s);
-    if (craft?.phase !== "OnOrbit") {
-      parts.push(`<p class="hint">Launch first to access ground ops.</p>`);
-      return parts;
-    }
-
-    parts.push(`
-      <div class="field"><label>Downlink station</label>
-        <select id="downlink-station">
-          ${s.ground_stations
-            .filter(
-              (st) =>
-                st.body_id === craft.body_id ||
-                (st.dsn && craft.body_id !== "earth"),
-            )
-            .map((st) => `<option value="${esc(st.id)}" ${craft.downlink_station_id === st.id ? "selected" : ""}>${esc(st.name)} (${st.bandwidth_mbps.toFixed(1)} Mbps)</option>`)
-            .join("")}
-        </select>
-        <p class="hint" title="Click a station marker on the globe to select">Tip: click station on globe</p>
-      </div>
-      <div class="field"><label>Payload mode</label>
-        <select id="payload-mode" title="Imaging fills buffer in sun; Downlink priority boosts transfer rate during passes; Safe reduces risk">
-          <option value="imaging" ${craft.payload_mode === "imaging" ? "selected" : ""}>Imaging — collect data in sunlight</option>
-          <option value="safe" ${craft.payload_mode === "safe" ? "selected" : ""}>Safe — low power, reduced ops</option>
-          <option value="downlink_priority" ${craft.payload_mode === "downlink_priority" ? "selected" : ""}>Downlink priority — faster passes</option>
-        </select>
-      </div>
-      <button id="btn-downlink" class="${craft.downlink_active ? "danger" : "primary"}">
-        ${craft.downlink_active ? "Stop Downlink" : "Start Downlink"}
-      </button>
-      <div class="field"><label>Command queue (runs at pass start)</label></div>
-      <button id="btn-queue-clear" title="Clears active anomaly">Clear anomaly @ station</button>
-      <button id="btn-queue-safe" title="Engages safe mode for 5 sim-minutes">Safe mode @ station</button>
-      <button id="btn-queue-reboot" title="Reboots comms subsystem">Reboot comms @ station</button>
-    `);
-    return parts;
-  }
-
-  private renderTransferTab(s: Snapshot): string[] {
-    const parts: string[] = [];
-    const craft = this.selectedCraft(s);
-
-    if (craft?.phase === "Transfer" && craft.transfer) {
-      const t = craft.transfer;
-      const eta = Math.max(0, t.arrival_sim_seconds - s.sim_seconds);
-      const targetName =
-        s.bodies.find((b) => b.id === t.target_body_id)?.name ??
-        t.target_body_id;
-      parts.push(`
-        <div class="field"><label>Cruise</label>
-          <div class="stat"><label>Destination</label><strong>${esc(targetName)}</strong></div>
-          <div class="stat gauge"><label>Progress</label>
-            <div class="progress-bar thin"><div class="progress-fill" style="width:${(t.progress * 100).toFixed(1)}%"></div></div>
-            <strong>${(t.progress * 100).toFixed(1)}%</strong>
-          </div>
-          <div class="stat"><label>Arrival in</label><strong>${formatDuration(eta)}</strong></div>
-          <div class="stat"><label>Capture burn</label><strong>${t.capture_dv_km_s.toFixed(2)} km/s</strong><span class="stat-sub">propellant reserved</span></div>
-        </div>
-        <button id="btn-warp-arrival" class="primary" data-warp="${t.arrival_sim_seconds + 1}">Warp to arrival</button>
-        <p class="hint">The craft is hibernated: ops cost is cut to 10% until capture.</p>
-      `);
-      return parts;
-    }
-
-    if (craft?.phase !== "OnOrbit") {
-      parts.push(
-        `<p class="hint">Launch to a parking orbit first, then plan the injection here.</p>`,
-      );
-      return parts;
-    }
-
-    const destinations = s.bodies.filter(
-      (b) => b.id !== "sun" && b.id !== craft.body_id,
-    );
-    const selected = craft.transfer_planner?.target_body_id ?? "";
-    parts.push(`
-      <div class="field"><label>Destination</label>
-        <select id="transfer-dest">
-          <option value="" ${selected === "" ? "selected" : ""}>— choose —</option>
-          ${destinations
-            .map(
-              (b) =>
-                `<option value="${esc(b.id)}" ${selected === b.id ? "selected" : ""}>${esc(b.name)}</option>`,
-            )
-            .join("")}
-        </select>
-      </div>
-      <div class="field"><label>Capture orbit</label>
-        <div class="row">
-          <input type="number" id="transfer-alt" value="400" min="30" step="50" title="Capture altitude (km)" />
-          <span class="unit">km ×</span>
-          <input type="number" id="transfer-inc" value="30" min="0" max="98" step="1" title="Capture inclination (deg)" />
-          <span class="unit">°</span>
-        </div>
-        <p class="hint">Set before departure — the capture burn is reserved from your tanks.</p>
-      </div>
-    `);
-
-    const planner = craft.transfer_planner;
-    if (planner) {
-      const now = s.sim_seconds;
-      const windowEta = Math.max(0, planner.next_window_sim_seconds - now);
-      const phase =
-        planner.phase_angle_deg != null && planner.required_phase_angle_deg != null
-          ? `<div class="stat"><label>Phase angle</label><strong>${planner.phase_angle_deg.toFixed(1)}°</strong><span class="stat-sub">need ${planner.required_phase_angle_deg.toFixed(1)}°</span></div>`
-          : "";
-      parts.push(`
-        <div class="field"><label>Window</label>
-          <div class="stat"><label>Status</label><strong class="${planner.window_open ? "pass-active" : ""}">${planner.window_open ? "OPEN" : `opens in ${formatDuration(windowEta)}`}</strong></div>
-          ${phase}
-          <div class="stat"><label>Cruise time</label><strong>${formatDuration(planner.transfer_seconds)}</strong></div>
-        </div>
-        <div class="field"><label>Costs</label>
-          <div class="stat"><label>Injection</label><strong class="${planner.affordable ? "" : "negative"}">$${planner.injection_cost_usd.toLocaleString()}</strong><span class="stat-sub">launch provider (cash)</span></div>
-          <div class="stat"><label>Capture Δv</label><strong class="${planner.propellant_ok ? "" : "negative"}">${planner.capture_dv_km_s.toFixed(2)} km/s</strong><span class="stat-sub">${planner.capture_propellant_kg.toFixed(1)} kg from your tanks</span></div>
-        </div>
-        ${planner.window_open ? "" : `<button id="btn-warp-window" data-warp="${planner.next_window_sim_seconds + 60}">Warp to window</button>`}
-        <button id="btn-begin-transfer" class="primary" ${planner.window_open && planner.affordable && planner.propellant_ok ? "" : "disabled"}
-          title="${planner.window_open ? (planner.affordable ? (planner.propellant_ok ? "Buy the injection and depart" : "Not enough propellant for the capture burn") : "Insufficient funds for the injection") : "Transfer window closed"}">
-          Begin transfer — $${planner.injection_cost_usd.toLocaleString()}
-        </button>
-      `);
-    } else if (selected === "") {
-      parts.push(`<p class="hint">Pick a destination to see windows and costs.</p>`);
-    }
-    return parts;
-  }
-
-  private renderOrbitTab(s: Snapshot): string[] {
-    const parts: string[] = [];
-    const craft = this.selectedCraft(s);
-    if (craft?.phase !== "OnOrbit") {
-      parts.push(`<p class="hint">Launch first to access maneuvers.</p>`);
-      return parts;
-    }
-
-    parts.push(`<button id="btn-prograde">Prograde +10 m/s</button>`);
-    parts.push(`<button id="btn-retrograde">Retrograde −10 m/s</button>`);
-
-    if (craft.pending_hohmann) {
-      const p = craft.pending_hohmann.plan;
-      const apsisNeeded = p.raising ? "apogee" : "perigee";
-      parts.push(`
-        <div class="alert warn">Hohmann → ${p.target_altitude_km} km. Burn 2 at <strong>${apsisNeeded}</strong> when Apsis shows READY. <span id="apsis-eta" class="stat-sub"></span></div>
-        <button id="btn-hohmann-2" class="primary" ${!craft.at_apsis ? "disabled" : ""}>Circularize (Burn 2)</button>
-      `);
-    } else if (craft.hohmann_preview) {
-      const preview = craft.hohmann_preview;
-      const apsisNeeded = preview.raising ? "perigee" : "apogee";
-      parts.push(`
-        <div class="field"><label>Hohmann target altitude (km)</label>
-          <input type="range" id="maneuver-alt" min="250" max="1200" value="${craft.maneuver_target_altitude_km}" />
-          <span id="maneuver-alt-val">${craft.maneuver_target_altitude_km} km</span>
-        </div>
-        <p class="hint">Δv ${(preview.total_dv_km_s * 1000).toFixed(0)} m/s total · burn 1 at ${apsisNeeded} when Apsis READY <span id="apsis-eta" class="stat-sub"></span></p>
-        <button id="btn-hohmann-1" class="primary" ${!craft.at_apsis ? "disabled" : ""}>Start Hohmann (Burn 1)</button>
-      `);
-    }
-    return parts;
-  }
-
-  private renderCompanyTab(s: Snapshot): string[] {
-    const parts: string[] = [];
-    if (s.programs.length > 0 && s.game_mode === "campaign") {
-      const rows = s.programs
-        .map((p) => {
-          const status = p.completed
-            ? `<strong class="pass-active">COMPLETE</strong>`
-            : p.unlocked
-              ? `<strong>ACTIVE</strong>`
-              : `<button class="btn-unlock-program" data-program="${esc(p.id)}"
-                  ${s.reputation >= p.reputation_required && p.keystone_done && p.tech_done && s.cash_usd >= p.buyin_usd ? "" : "disabled"}
-                  title="${!p.keystone_done ? `Complete ${p.requires_keystone ?? ""} first` : !p.tech_done ? `Research ${p.requires_tech ?? ""} first` : s.reputation < p.reputation_required ? `Requires reputation ${p.reputation_required}` : s.cash_usd < p.buyin_usd ? "Insufficient funds" : "Buy into the program"}">
-                  Unlock — $${p.buyin_usd.toLocaleString()}
-                </button>`;
-          return `<div class="stat"><label>${esc(p.name)}</label>${status}<span class="stat-sub">rep ${p.reputation_required}${p.completion_grant_usd > 0 ? ` · grant $${(p.completion_grant_usd / 1000).toFixed(0)}k` : ""}</span></div>`;
-        })
-        .join("");
-      parts.push(
-        `<div class="field"><label>Programs</label>${rows}<p class="hint">Each program opens a body's contracts; its keystone unlocks the next gate.</p></div>`,
-      );
-    }
-    parts.push(`
-      <div class="field"><label>Game mode</label>
-        <select id="game-mode" title="Campaign gates contracts by reputation; Sandbox is relaxed">
-          <option value="sandbox" ${s.game_mode === "sandbox" ? "selected" : ""}>Sandbox</option>
-          <option value="campaign" ${s.game_mode === "campaign" ? "selected" : ""}>Campaign</option>
-        </select>
-        <p class="hint">${s.game_mode === "sandbox" ? "Sandbox: all buses, all contracts available, −5 rep on failure." : "Campaign: rep gates, buses unlock via R&D, −10 rep on failure."}</p>
-      </div>
-      <button id="btn-export-save">Save game</button>
-      <button id="btn-import-save">Load game</button>
-      <button id="btn-help">Help / Tutorial</button>
-      <label class="toggle">
-        <input type="checkbox" id="show-tle" ${this.callbacks.getShowTleRefs() ? "checked" : ""} />
-        Show TLE reference satellites (ISS)
-      </label>
-      <label class="toggle">
-        <input type="checkbox" id="show-legend" ${this.callbacks.getShowLegend() ? "checked" : ""} />
-        Show globe legend
-      </label>
-      <p class="hint">Shortcuts: Space pause · +/− speed · 1-4 tabs · D downlink · ? help</p>
-    `);
-
-    if (s.unlocked_tech.length) {
-      parts.push(`<div class="field"><label>Unlocked R&amp;D</label><div class="chip-row">
-        ${s.unlocked_tech
-          .map((id) => {
-            const t = this.content.tech_tree.find((n) => n.id === id);
-            return `<span class="chip">${esc(t?.name ?? id)}</span>`;
-          })
-          .join("")}
-      </div></div>`);
-    }
-
-    parts.push(`<div class="field"><label>Research tree</label></div>`);
-    parts.push(`<div class="tech-tree">`);
-    for (const tech of this.content.tech_tree) {
-      const owned = s.unlocked_tech.includes(tech.id);
-      const locked = tech.requires.some((r) => !s.unlocked_tech.includes(r));
-      const state = owned ? "owned" : locked ? "locked" : "available";
-      parts.push(`
-        <div class="tech-node ${state}">
-          <div class="tech-name">${esc(tech.name)}</div>
-          <div class="tech-desc">${esc(tech.description)}</div>
-          ${owned ? `<span class="chip owned">Owned</span>` : `<button class="btn-tech" data-tech="${esc(tech.id)}" ${locked || s.cash_usd < tech.cost_usd ? "disabled" : ""}>$${tech.cost_usd.toLocaleString()}</button>`}
-          ${locked && !owned ? `<span class="tech-req">Requires: ${esc(tech.requires.join(", "))}</span>` : ""}
-        </div>
-      `);
-    }
-    parts.push(`</div>`);
-    return parts;
   }
 
   private computeActionStructureKey(s: Snapshot): string {
@@ -966,9 +1194,7 @@ export class HudPanel {
       craft?.contracts_completed ?? "",
       craft?.name ?? "",
       craft?.transfer
-        ? Math.round(
-            (craft.transfer.arrival_sim_seconds - s.sim_seconds) / 900,
-          )
+        ? Math.round((craft.transfer.arrival_sim_seconds - s.sim_seconds) / 900)
         : "",
       s.unlocked_tech.join(","),
       s.unlocked_buses.join(","),
@@ -979,8 +1205,25 @@ export class HudPanel {
           : "nohohmann",
       s.outcome ?? "",
       s.marketplace
-        .map((m) => `${m.template_id}:${m.available}:${m.repeat}`)
+        .map((m) => {
+          const eta =
+            m.contest_ends_sim_seconds != null
+              ? Math.round((m.contest_ends_sim_seconds - s.sim_seconds) / 30)
+              : "";
+          return `${m.template_id}:${m.available}:${m.repeat}:${m.contested_by ?? ""}:${m.claimed_by ?? ""}:${Math.round(m.rush_bid_premium_usd ?? 0)}:${eta}`;
+        })
         .join(","),
+      s.market_enabled ? "1" : "0",
+      (s.competitors ?? [])
+        .map((c) => `${c.id}:${c.contracts_won}`)
+        .join(","),
+      s.max_flights,
+      s.active_flights,
+      this.marketFilter,
+      s.active_world_event?.event_id ?? "",
+      s.prestige
+        ? `${s.prestige.score}:${s.prestige.rank}:${s.prestige.contested_wins}`
+        : "",
     ].join("|");
   }
 
@@ -1014,7 +1257,8 @@ export class HudPanel {
       const cost =
         this.content.buses.find((b) => b.id === craft.bus_id)
           ?.launch_cost_usd ?? 0;
-      launchBtn.disabled = s.cash_usd < cost;
+      launchBtn.disabled =
+        s.cash_usd < cost || s.active_flights >= s.max_flights;
     }
 
     for (const btn of document.querySelectorAll<HTMLButtonElement>(
@@ -1046,6 +1290,27 @@ export class HudPanel {
       "btn-hohmann-2",
     ) as HTMLButtonElement | null;
     if (hohmann2) hohmann2.disabled = !craft?.at_apsis;
+
+    const planeBtn = document.getElementById(
+      "btn-plane-change",
+    ) as HTMLButtonElement | null;
+    if (planeBtn && craft) {
+      const di = Number(
+        (document.getElementById("plane-di") as HTMLInputElement | null)
+          ?.value ?? 0,
+      );
+      planeBtn.disabled = !craft.at_node || di === 0;
+      const node = document.getElementById("plane-node");
+      if (node) {
+        node.textContent = craft.at_node ? "READY" : "—";
+        node.className = craft.at_node ? "pass-active" : "";
+      }
+      const dv = document.getElementById("plane-dv");
+      if (dv) {
+        const v = Math.hypot(...craft.velocity_eci_km_s);
+        dv.textContent = `${(2 * v * Math.sin((Math.abs(di) * Math.PI) / 360) * 1000).toFixed(0)} m/s`;
+      }
+    }
 
     // Live countdown to the burn apsis (rendered HTML is structure-keyed,
     // so this span is refreshed here every frame instead).
@@ -1079,7 +1344,13 @@ export class HudPanel {
         return;
       }
       if (target.classList.contains("btn-contract")) {
-        this.callbacks.onAcceptContract(target.dataset.contract!);
+        const craftId = this.resolveAcceptCraftId(s);
+        this.callbacks.onAcceptContract(target.dataset.contract!, craftId);
+        return;
+      }
+      if (target.classList.contains("btn-rush-bid")) {
+        const craftId = this.resolveAcceptCraftId(s);
+        this.callbacks.onRushBid(target.dataset.contract!, craftId);
         return;
       }
       if (target.classList.contains("accel-btn")) {
@@ -1139,6 +1410,14 @@ export class HudPanel {
         this.callbacks.onCompleteHohmann();
         return;
       }
+      if (target.id === "btn-plane-change") {
+        const di = Number(
+          (document.getElementById("plane-di") as HTMLInputElement | null)
+            ?.value ?? 0,
+        );
+        if (di !== 0) this.callbacks.onPlaneChange(di);
+        return;
+      }
       if (target.classList.contains("btn-unlock-program")) {
         const programId = target.dataset.program;
         if (programId) {
@@ -1173,11 +1452,21 @@ export class HudPanel {
         }
         return;
       }
-      if (target.id === "btn-load-scenario") {
-        const sel = document.getElementById(
-          "scenario-select",
-        ) as HTMLSelectElement;
-        this.callbacks.onLoadScenario(sel.value);
+      if (
+        target.id === "btn-new-career" ||
+        target.id === "btn-new-sandbox" ||
+        target.id === "btn-load-scenario"
+      ) {
+        const id =
+          target.dataset.scenario ??
+          (
+            document.getElementById("scenario-select") as HTMLSelectElement | null
+          )?.value;
+        if (id) this.callbacks.onLoadScenario(id);
+        return;
+      }
+      if (target.id === "btn-enter-sandbox-mode") {
+        this.callbacks.onSetGameMode("sandbox");
         return;
       }
       if (target.id === "btn-help") {
@@ -1215,6 +1504,20 @@ export class HudPanel {
         const val = Number((target as HTMLInputElement).value);
         document.getElementById("maneuver-alt-val")!.textContent = `${val} km`;
         this.callbacks.onSetManeuverTarget(val);
+        return;
+      }
+      if (target.id === "plane-di") {
+        const di = Number((target as HTMLInputElement).value);
+        document.getElementById("plane-di-val")!.textContent =
+          `${di.toFixed(1)}°`;
+        const craft = this.currentSnapshot
+          ? this.selectedCraft(this.currentSnapshot)
+          : null;
+        const dv = document.getElementById("plane-dv");
+        if (dv && craft) {
+          const v = Math.hypot(...craft.velocity_eci_km_s);
+          dv.textContent = `${(2 * v * Math.sin((Math.abs(di) * Math.PI) / 360) * 1000).toFixed(0)} m/s`;
+        }
       }
     });
 
@@ -1225,7 +1528,9 @@ export class HudPanel {
         return;
       }
       if (target.id === "game-mode") {
-        this.callbacks.onSetGameMode((target as HTMLSelectElement).value);
+        // Legacy select (if present): only allow campaign→sandbox mid-run.
+        const mode = (target as HTMLSelectElement).value;
+        if (mode === "sandbox") this.callbacks.onSetGameMode("sandbox");
         return;
       }
       if (target.id === "downlink-station") {
@@ -1238,9 +1543,32 @@ export class HudPanel {
         this.callbacks.onSetPayloadMode((target as HTMLSelectElement).value);
         return;
       }
-      if (target.id === "auto-downlink") {
+      if (
+        target.id === "auto-downlink" ||
+        target.id === "pref-auto-downlink"
+      ) {
         this.callbacks.onAutoDownlinkChange(
           (target as HTMLInputElement).checked,
+        );
+        return;
+      }
+      if (target.id === "pref-auto-pause-arrival") {
+        this.callbacks.onAutoPauseArrivalChange(
+          (target as HTMLInputElement).checked,
+        );
+        return;
+      }
+      if (target.id === "pref-auto-pause-anomaly") {
+        this.callbacks.onAutoPauseAnomalyChange(
+          (target as HTMLInputElement).checked,
+        );
+        return;
+      }
+      if (target.dataset.assignContract) {
+        const val = (target as HTMLSelectElement).value;
+        this.callbacks.onAssignContract(
+          target.dataset.assignContract,
+          val === "" ? null : Number(val),
         );
         return;
       }
@@ -1258,12 +1586,10 @@ export class HudPanel {
         const dest = (target as unknown as HTMLSelectElement).value;
         if (dest) {
           const alt = Number(
-            (document.getElementById("transfer-alt") as HTMLInputElement)
-              .value,
+            (document.getElementById("transfer-alt") as HTMLInputElement).value,
           );
           const inc = Number(
-            (document.getElementById("transfer-inc") as HTMLInputElement)
-              .value,
+            (document.getElementById("transfer-inc") as HTMLInputElement).value,
           );
           this.callbacks.onSetTransferTarget(dest, alt, inc);
         }
@@ -1275,23 +1601,14 @@ export class HudPanel {
         ) as HTMLSelectElement | null;
         if (destSel?.value) {
           const alt = Number(
-            (document.getElementById("transfer-alt") as HTMLInputElement)
-              .value,
+            (document.getElementById("transfer-alt") as HTMLInputElement).value,
           );
           const inc = Number(
-            (document.getElementById("transfer-inc") as HTMLInputElement)
-              .value,
+            (document.getElementById("transfer-inc") as HTMLInputElement).value,
           );
           this.callbacks.onSetTransferTarget(destSel.value, alt, inc);
         }
         return;
-      }
-      if (target.id === "scenario-select") {
-        const sc = this.content.scenarios?.find(
-          (s) => s.id === (target as HTMLSelectElement).value,
-        );
-        const desc = document.getElementById("scenario-desc");
-        if (desc && sc) desc.textContent = sc.description;
       }
     });
   }

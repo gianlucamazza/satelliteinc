@@ -25,6 +25,12 @@ pub enum PlayerAction {
         #[serde(default)]
         assigned_craft_id: Option<CraftId>,
     },
+    /// Pay a premium to snatch a contested marketplace offer (accept + fee).
+    RushBid {
+        contract_id: String,
+        #[serde(default)]
+        assigned_craft_id: Option<CraftId>,
+    },
     Launch {
         craft_id: CraftId,
     },
@@ -49,6 +55,12 @@ pub enum PlayerAction {
     },
     StartHohmann {
         craft_id: CraftId,
+    },
+    /// Rotate the orbital plane at a node: Δv = 2·v·sin(|Δi|/2) — brutally
+    /// expensive, exactly like the real thing.
+    PlaneChangeBurn {
+        craft_id: CraftId,
+        delta_inclination_deg: f64,
     },
     CompleteHohmann {
         craft_id: CraftId,

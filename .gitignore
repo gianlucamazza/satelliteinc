@@ -8,3 +8,7 @@ dist/
 .env.*
 web/.vite/
 coverage/
+
+# Playwright / Vitest artifacts
+web/test-results/
+web/playwright-report/

@@ -1,6 +1,10 @@
 import type { Snapshot } from "../types.ts";
 import type { BodyView } from "./body-view.ts";
-import { SystemMapView } from "./system-map.ts";
+import { prefersReducedMotion } from "./colors.ts";
+import {
+  SystemMapView,
+  type SystemMapCallbacks,
+} from "./system-map.ts";
 
 export type ActiveView = "body" | "map";
 
@@ -19,8 +23,9 @@ export class ViewManager {
   constructor(
     private readonly bodyView: BodyView,
     canvas: HTMLCanvasElement,
+    mapCallbacks: SystemMapCallbacks | null = null,
   ) {
-    this.map = new SystemMapView(canvas);
+    this.map = new SystemMapView(canvas, mapCallbacks);
     this.fadeEl = document.getElementById("view-fade");
     this.toggleBtn = document.getElementById("view-toggle");
     this.toggleBtn?.addEventListener("click", () => {
@@ -40,7 +45,7 @@ export class ViewManager {
   setActive(view: ActiveView): void {
     if (view === this.active) return;
     // Fade through black: never lerp between projections.
-    if (this.fadeEl) {
+    if (this.fadeEl && !prefersReducedMotion()) {
       this.fadeEl.classList.add("active");
       window.setTimeout(() => {
         this.fadeEl?.classList.remove("active");
@@ -56,6 +61,9 @@ export class ViewManager {
   private applyActive(view: ActiveView): void {
     this.active = view;
     this.syncChrome();
+    // After chrome/class toggles: one paint of the new view so CSS2D labels
+    // for the inactive scene are not left mid-transform on screen.
+    this.render();
   }
 
   private syncChrome(): void {
@@ -66,6 +74,15 @@ export class ViewManager {
       "map-mode",
       this.active === "map",
     );
+    // When leaving map mode, also scrub any map-label nodes that still have
+    // an inline display from the last CSS2DRenderer pass.
+    if (this.active === "body") {
+      this.bodyView.labelRenderer.domElement
+        .querySelectorAll(".map-label")
+        .forEach((el) => {
+          (el as HTMLElement).style.display = "none";
+        });
+    }
     if (this.toggleBtn) {
       this.toggleBtn.textContent =
         this.active === "body" ? "System map (M)" : "Body view (M)";

@@ -42,6 +42,18 @@ pub struct ContractOffer {
     pub available: bool,
     /// Campaign only: already completed once — repeatable at reduced payout, no reputation.
     pub repeat: bool,
+    /// Rival currently contesting this offer (display name).
+    #[serde(default)]
+    pub contested_by: Option<String>,
+    /// When the contest ends and the rival claims if still open.
+    #[serde(default)]
+    pub contest_ends_sim_seconds: Option<f64>,
+    /// Rival holding this offer after a successful claim (display name).
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    /// Cash premium to rush-bid a contested offer (0 if not contestable).
+    #[serde(default)]
+    pub rush_bid_premium_usd: f64,
 }
 
 impl ContractOffer {
@@ -79,6 +91,10 @@ impl ContractOffer {
             body_id: template.body_id.clone(),
             available: rep_ok && program_ok,
             repeat,
+            contested_by: None,
+            contest_ends_sim_seconds: None,
+            claimed_by: None,
+            rush_bid_premium_usd: 0.0,
         }
     }
 }

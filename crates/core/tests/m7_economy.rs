@@ -106,18 +106,33 @@ fn completing_earth_contracts_completes_the_earth_program() {
     sim.apply_action(PlayerAction::Launch { craft_id: 0 })
         .unwrap();
 
-    // Seed all but one as already completed, then finish the last one.
-    for id in ["earth_imaging", "comms_relay", "science_multi", "rapid_eye"] {
-        sim.company.completed_contracts.push(id.into());
+    // Seed all but one Earth contract as completed, then finish the last one.
+    // Keep this list in sync with content contracts whose body_id is earth.
+    let earth_ids: Vec<String> = sim
+        .content
+        .contracts
+        .iter()
+        .filter(|c| c.body_id == "earth")
+        .map(|c| c.id.clone())
+        .collect();
+    assert!(earth_ids.len() >= 2, "need at least two Earth contracts");
+    let last = earth_ids.last().unwrap().clone();
+    for id in &earth_ids {
+        if id != &last {
+            sim.company.completed_contracts.push(id.clone());
+        }
     }
-    sim.company.reputation = 50.0; // clear polar_watch's rep gate
+    sim.company.reputation = 80.0; // clear rep gates on late Earth offers
     sim.apply_action(PlayerAction::AcceptContract {
-        contract_id: "polar_watch".into(),
+        contract_id: last,
         assigned_craft_id: Some(0),
     })
     .unwrap();
     if let Some(c) = sim.company.active_contracts.first_mut() {
         c.downlink_mb_done = c.downlink_mb_required;
+        // Satisfy multi-station / on-station if the last template requires them.
+        c.stations_used = vec!["svalbard".into(), "kiruna".into(), "chile".into()];
+        c.on_station_seconds = c.min_on_station_days * 86_400.0 + 1.0;
     }
     sim.check_contracts();
 

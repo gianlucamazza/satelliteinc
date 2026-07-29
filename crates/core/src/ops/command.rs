@@ -27,11 +27,12 @@ impl QueuedCommand {
 }
 
 /// Execute a queued command; returns human-readable result.
+/// Callers refine the message when the procedure does not match the fault.
 #[must_use]
 pub fn execute_command(command: &CommandType) -> &'static str {
     match command {
-        CommandType::RebootComms => "Comms subsystem rebooted",
-        CommandType::SafeMode => "Safe mode engaged for 5 min",
-        CommandType::ClearAnomaly => "Anomaly cleared via ground command",
+        CommandType::RebootComms => "Comms reboot sequence complete",
+        CommandType::SafeMode => "Safe mode engaged for 5 min (payload safed)",
+        CommandType::ClearAnomaly => "EPS recovery / anomaly clear sequence complete",
     }
 }

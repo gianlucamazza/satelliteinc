@@ -182,6 +182,9 @@ pub struct CompanyState {
     /// Programs whose whole contract set is complete (grant paid once).
     #[serde(default)]
     pub completed_programs: Vec<String>,
+    /// Times the player accepted a contested offer (rush bid or normal accept).
+    #[serde(default)]
+    pub contested_wins: u32,
 }
 
 fn default_one() -> f64 {
@@ -216,6 +219,7 @@ impl CompanyState {
                 .map(|p| p.id.clone())
                 .collect(),
             completed_programs: Vec::new(),
+            contested_wins: 0,
         };
         company.apply_mode_buses(content);
         company

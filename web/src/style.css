@@ -11,6 +11,24 @@
   --danger: #ff6b6b;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  /* Spacing scale — padding/gap must use these so borders never sit flush on text. */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --hud-clip-right: 268px;
+  --hud-width: 248px;
+  --hud-pad: 10px;
+  --hud-font: 0.7rem;
+  --hud-title: 0.88rem;
+  --topbar-height: 36px;
+  /* Right rail reserved for System map toggle + sim-date (no topbar intrusion). */
+  --map-rail: 156px;
+  --chrome-gap: 8px;
 }
 
 * {
@@ -47,8 +65,12 @@ body,
   overflow: hidden;
   pointer-events: none;
   z-index: 2;
-  /* Fallback clip — JS also hides labels projected under #hud */
-  clip-path: polygon(min(432px, 55vw) 0, 100% 0, 100% 100%, min(432px, 55vw) 100%);
+  clip-path: polygon(
+    var(--hud-clip-right, 432px) 0,
+    100% 0,
+    100% 100%,
+    var(--hud-clip-right, 432px) 100%
+  );
 }
 
 .station-label,
@@ -72,55 +94,285 @@ body,
   color: #c9a0ff;
 }
 
+/* ---- Top bar: global strip, outside the left dock ----
+   Zones (no overlap):
+   [ dock | topbar .............. | map rail ]
+*/
+.hud-topbar {
+  position: fixed;
+  top: var(--chrome-gap);
+  left: calc(var(--hud-width) + var(--chrome-gap) * 2 + 4px);
+  /* Never enter the right map rail (view-toggle + sim-date). */
+  right: calc(var(--map-rail) + var(--chrome-gap));
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-height: var(--topbar-height);
+  pointer-events: none;
+}
+
+.hud-topbar .priority-strip {
+  pointer-events: auto;
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(10, 16, 28, 0.82);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.hud-topbar .time-toolbar {
+  pointer-events: auto;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
+  background: rgba(10, 16, 28, 0.82);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.hud-topbar .time-toolbar .accel-btn {
+  min-width: 28px;
+  min-height: 28px;
+  width: auto;
+  padding: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: 0.62rem;
+  border-radius: 5px;
+}
+
+.hud-topbar .phase-chip {
+  pointer-events: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: rgba(10, 16, 28, 0.75);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 0.6rem;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  max-width: min(220px, 20vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* topbar precedes #hud in the DOM — use :has, not ~ */
+body:has(#hud.collapsed) .hud-topbar {
+  left: calc(40px + var(--chrome-gap) * 2);
+  right: calc(var(--map-rail) + var(--chrome-gap));
+}
+
+/* ---- Left dock: tabs + actions + contextual status ---- */
 #hud {
   position: fixed;
-  top: 16px;
-  left: 16px;
+  top: var(--chrome-gap);
+  left: var(--chrome-gap);
   z-index: 10;
   pointer-events: auto;
-  width: min(400px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
-  overflow-y: auto;
+  width: min(var(--hud-width), calc(100vw - var(--chrome-gap) * 2));
+  max-height: calc(100vh - var(--chrome-gap) * 2);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 16px;
-  backdrop-filter: blur(14px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  border-radius: var(--radius-lg);
+  padding: var(--hud-pad);
+  font-size: var(--hud-font);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  transition: width 0.2s ease, padding 0.2s ease;
+}
+
+#hud.collapsed {
+  width: 40px;
+  min-width: 40px;
+  padding: var(--space-2);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+#hud.collapsed header h1,
+#hud.collapsed .hud-shortcuts,
+#hud.collapsed #tab-bar,
+#hud.collapsed #fleet-strip,
+#hud.collapsed #status-panel,
+#hud.collapsed #action-panel,
+#hud.collapsed #event-log {
+  display: none;
+}
+
+/* Dynamic chrome: empty / irrelevant sections release vertical space. */
+#hud .hud-section-hidden {
+  display: none !important;
+}
+
+#hud .status-hint {
+  margin: 4px 0 0;
+  font-size: 0.65rem;
+}
+
+#hud.collapsed .hud-header-row {
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+#hud.collapsed .hud-toggle {
+  width: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px;
+}
+
+.hud-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.hud-toggle {
+  flex-shrink: 0;
+  width: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: var(--space-1);
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.hud-shortcuts {
+  display: none;
+  margin: 6px 0 0;
+  font-size: 0.62rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+#hud.collapsed .hud-shortcuts {
+  display: none;
 }
 
 header h1 {
-  margin: 0 0 4px;
-  font-size: 1.2rem;
+  margin: 0;
+  font-size: var(--hud-title);
   font-weight: 600;
-  letter-spacing: 0.06em;
-}
-
-#phase-label {
-  margin: 0 0 10px;
-  color: var(--accent);
-  font-size: 0.75rem;
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tab-bar {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
-  margin-bottom: 12px;
+  grid-template-columns: repeat(var(--tab-count, 4), 1fr);
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+  flex-shrink: 0;
+}
+
+/*
+ * Dock sections: top divider + interior padding so text/controls never sit
+ * flush against the border or the dock edge.
+ */
+#hud > section {
+  margin: 0;
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) 0 var(--space-2);
+  scroll-padding: var(--space-2);
+}
+
+/* Contextual status (alerts / contract / craft) — may be fully hidden. */
+#hud .hud-status {
+  flex: 0 1 auto;
+  max-height: 32vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-1) var(--space-2);
+}
+
+#hud .hud-status:empty,
+#hud .hud-status.hud-section-hidden {
+  border-top: none !important;
+  padding: 0 !important;
+  max-height: 0;
+  overflow: hidden;
+}
+
+#hud .hud-actions {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-1) var(--space-2);
+}
+
+#hud .hud-log {
+  flex: 0 0 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-1);
+}
+
+#hud .hud-dock-header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 0 var(--space-1);
+  border: none;
+}
+
+#hud .fleet-strip {
+  flex-shrink: 0;
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
 }
 
 .tab {
-  padding: 8px 4px;
+  padding: var(--space-2) var(--space-2);
+  min-height: 32px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.03);
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.62rem;
+  line-height: 1.2;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  margin: 0;
+  width: 100%;
+}
+
+.tab-kbd {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 1px var(--space-1);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: var(--muted);
+  vertical-align: middle;
 }
 
 .tab.active {
@@ -129,27 +381,42 @@ header h1 {
   border-color: rgba(77, 163, 255, 0.4);
 }
 
+/* Generic sections outside the dock (keep light defaults). */
 section {
-  margin-bottom: 12px;
-  padding-top: 10px;
+  margin-bottom: var(--space-3);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border);
+}
+
+/* Dock sections fully own chrome (override generic `section`). */
+#hud > section {
+  border-top: 1px solid var(--border);
+  margin-bottom: 0;
 }
 
 .stat-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  font-size: 0.82rem;
+  gap: var(--space-2);
+  font-size: 0.7rem;
 }
 
 .stat-grid.stations {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .stat {
   background: rgba(255, 255, 255, 0.04);
-  border-radius: 8px;
-  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-2);
+  min-width: 0;
+}
+
+/* Selected downlink dish in the status station grid. */
+.stat.station-selected {
+  border-color: rgba(77, 163, 255, 0.45);
+  background: rgba(77, 163, 255, 0.1);
 }
 
 .stat label {
@@ -161,23 +428,50 @@ section {
 }
 
 .stat strong {
-  font-size: 0.95rem;
+  font-size: 0.8rem;
   font-family: var(--mono);
 }
 
 .stat-sub {
   display: block;
-  font-size: 0.65rem;
+  font-size: 0.58rem;
   color: var(--muted);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .contract-card {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 10px;
+  margin-top: var(--space-2);
+  padding: var(--space-3) var(--space-3);
+  border-radius: var(--radius-md);
   background: rgba(77, 163, 255, 0.08);
   border: 1px solid var(--border);
+}
+
+.contract-card.compact {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+}
+
+/* First card in a status panel: no extra top gap (section already pads). */
+#status-panel > .contract-card:first-child,
+#status-panel > .alert:first-child,
+#status-panel > .stat-grid:first-child,
+#status-panel > .hint:first-child {
+  margin-top: 0;
+}
+
+.assign-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.assign-row select {
+  flex: 1;
+  min-width: 0;
 }
 
 .contract-head {
@@ -223,6 +517,16 @@ section {
   line-height: 1.4;
 }
 
+.hint.warn-hint {
+  color: var(--warn);
+}
+
+.station-label.locked {
+  color: var(--muted);
+  opacity: 0.75;
+  border: 1px dashed rgba(143, 163, 196, 0.35);
+}
+
 .pass-hint strong {
   color: var(--success);
 }
@@ -259,7 +563,49 @@ section {
 }
 
 .toolbar {
-  margin-bottom: 8px;
+  margin: 0 0 var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0;
+}
+
+/* Dock residual tools after accel moved to top bar. */
+.toolbar.dock-toolbar {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.toolbar .accel-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.toolbar .accel-btn {
+  flex: 1 1 auto;
+  min-width: 2.2rem;
+  width: auto;
+  margin: 0;
+  padding: 4px 2px;
+  font-size: 0.65rem;
+}
+
+.toolbar .compact-toggle {
+  margin: 0;
+  font-size: 0.65rem;
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.toolbar #btn-warp-next {
+  margin: 0;
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 button,
@@ -269,24 +615,32 @@ input[type="range"] {
 }
 
 select {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.25);
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.72rem;
 }
 
 button {
-  margin-top: 6px;
-  padding: 10px 12px;
+  /* Prefer parent flex/grid gap over margin — avoids flush borders in rows. */
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgba(77, 163, 255, 0.15);
   color: var(--text);
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: 0.72rem;
+  line-height: 1.25;
   transition: background 0.15s;
+}
+
+/* Stacked full-width actions in a field still need separation. */
+.field > button + button,
+#action-panel > button + button {
+  margin-top: var(--space-2);
 }
 
 button:hover:not(:disabled) {
@@ -313,14 +667,45 @@ button.ghost {
 }
 
 .field {
-  margin-bottom: 10px;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  min-width: 0;
+}
+
+.field:last-child {
+  margin-bottom: var(--space-2);
 }
 
 .field label {
   display: block;
   font-size: 0.72rem;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin: 0 0 var(--space-2);
+  line-height: 1.3;
+}
+
+/* Inputs inside fields must not touch the field label or next control. */
+.field > select,
+.field > input[type="range"],
+.field > input[type="text"],
+.field > .row {
+  margin-top: 0;
+}
+
+.field .row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.field .row > * {
+  min-width: 0;
+}
+
+.field .row button {
+  width: auto;
+  flex: 0 0 auto;
 }
 
 .toggle {
@@ -338,14 +723,251 @@ button.ghost {
 }
 
 .offer-card {
-  margin-bottom: 10px;
-  padding: 8px;
-  border-radius: 8px;
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .offer-card.locked {
   opacity: 0.75;
+}
+
+.offer-card.contested {
+  border: 1px solid rgba(255, 179, 71, 0.4);
+  background: rgba(255, 179, 71, 0.06);
+}
+
+.offer-card.claimed {
+  border: 1px solid rgba(255, 107, 107, 0.25);
+}
+
+.chip {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin: 4px 4px 0 0;
+}
+
+.chip.contest {
+  color: var(--warn);
+  background: rgba(255, 179, 71, 0.12);
+  border: 1px solid rgba(255, 179, 71, 0.35);
+}
+
+.chip.claimed {
+  color: var(--danger);
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+}
+
+.chip.rival {
+  color: var(--muted);
+  background: rgba(100, 150, 220, 0.1);
+  border: 1px solid rgba(100, 150, 220, 0.22);
+}
+
+.chip.repeat {
+  color: var(--accent);
+  background: rgba(77, 163, 255, 0.1);
+  border: 1px solid rgba(77, 163, 255, 0.25);
+}
+
+.market-pressure {
+  margin-bottom: 10px;
+}
+
+.market-pressure label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.rival-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.btn-rush-bid {
+  margin-top: 6px;
+  background: rgba(255, 179, 71, 0.15) !important;
+  border-color: rgba(255, 179, 71, 0.4) !important;
+  color: var(--warn);
+}
+
+/* Career spine (Mission tab) */
+.career-path {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(77, 163, 255, 0.05);
+}
+
+.career-path > label {
+  margin-bottom: var(--space-2);
+}
+
+.career-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-1);
+  margin: var(--space-1) 0 var(--space-2);
+  padding: 0;
+}
+
+.career-node {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 2.6rem;
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.58rem;
+  line-height: 1.15;
+  width: auto;
+  margin: 0;
+  cursor: default;
+}
+
+.career-node.done {
+  color: var(--success);
+}
+
+.career-node.active {
+  color: var(--accent);
+  border-color: rgba(77, 163, 255, 0.35);
+  background: rgba(77, 163, 255, 0.1);
+}
+
+.career-node.buyable {
+  cursor: pointer;
+  color: var(--warn);
+  border-color: rgba(255, 179, 71, 0.45);
+  background: rgba(255, 179, 71, 0.1);
+}
+
+.career-node.buyable:hover {
+  border-color: var(--warn);
+}
+
+.career-mark {
+  font-size: 0.7rem;
+}
+
+.career-label {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.career-sep {
+  color: rgba(143, 163, 196, 0.35);
+  font-size: 0.55rem;
+  padding: 0 1px;
+  user-select: none;
+}
+
+.play-mode-row {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.play-mode-row button {
+  flex: 1 1 0;
+  width: auto;
+}
+
+.mode-badge {
+  margin: 2px 0 6px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.priority-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin-bottom: 0;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(77, 163, 255, 0.08);
+  border: 1px solid rgba(100, 150, 220, 0.22);
+}
+
+.priority-strip .ps-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 2.8rem;
+  gap: 1px;
+  padding: 0;
+}
+
+.priority-strip label {
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.priority-strip strong {
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  line-height: 1.15;
+}
+
+.priority-strip .skeleton-ps strong {
+  opacity: 0.35;
+}
+
+.warn-text {
+  color: var(--warn) !important;
+}
+
+.weather-banner {
+  margin-bottom: 8px;
+}
+
+.market-filter-row select {
+  width: 100%;
+}
+
+.prestige-panel {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: rgba(61, 214, 140, 0.06);
+  border: 1px solid rgba(61, 214, 140, 0.2);
+}
+
+.goal-list {
+  margin: 8px 0 0;
+  padding-left: 0;
+  list-style: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.goal-list li {
+  margin: 3px 0;
+}
+
+.goal-list .goal-done {
+  color: var(--success);
 }
 
 .offer-meta,
@@ -363,8 +985,8 @@ button.ghost {
 }
 
 .tech-node {
-  padding: 10px;
-  border-radius: 8px;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
 }
@@ -413,15 +1035,21 @@ button.ghost {
 }
 
 #event-log {
-  font-size: 0.72rem;
+  font-size: 0.6rem;
   font-family: var(--mono);
   color: var(--muted);
-  max-height: 140px;
+  max-height: 72px;
   overflow-y: auto;
+  line-height: 1.35;
 }
 
 #event-log p {
-  margin: 4px 0;
+  margin: 0 0 var(--space-1);
+  padding: 0 var(--space-1);
+}
+
+#event-log p:last-child {
+  margin-bottom: 0;
 }
 
 #event-log .pass {
@@ -440,34 +1068,50 @@ button.ghost {
   color: var(--success) !important;
 }
 
-.toast {
+.toast,
+.toast-stack {
   position: fixed;
-  top: 20px;
+  /* Below topbar so toasts never cover cash/speed chips. */
+  top: calc(var(--topbar-height) + var(--chrome-gap) * 2);
   left: 50%;
   transform: translateX(-50%) translateY(-120%);
   z-index: 30;
+  pointer-events: none;
+  max-width: min(420px, calc(100vw - var(--hud-clip-right) - var(--map-rail) - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.25s;
+}
+
+.toast.visible,
+.toast-stack.visible {
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast-item {
   padding: 12px 18px;
   border-radius: 10px;
   background: rgba(12, 18, 32, 0.95);
   border: 1px solid var(--border);
   font-size: 0.85rem;
-  transition: transform 0.25s;
-  pointer-events: none;
-  max-width: min(480px, 90vw);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
-.toast.visible {
-  transform: translateX(-50%) translateY(0);
-}
-
+.toast-item.success,
 .toast.success {
   border-color: rgba(61, 214, 140, 0.5);
   color: var(--success);
 }
 
+.toast-item.error,
 .toast.error {
   border-color: rgba(255, 107, 107, 0.5);
   color: var(--danger);
+}
+
+.toast-item.info {
+  color: var(--text);
 }
 
 .loading-overlay {
@@ -504,10 +1148,17 @@ button.ghost {
 }
 
 .loading-bar-fill {
-  width: 40%;
+  width: 0%;
   height: 100%;
   background: var(--accent);
-  animation: load-pulse 1.2s ease-in-out infinite;
+  transition: width 0.25s ease;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .loading-bar-fill:not([style*="width"]) {
+    width: 40%;
+    animation: load-pulse 1.2s ease-in-out infinite;
+  }
 }
 
 @keyframes load-pulse {
@@ -516,6 +1167,52 @@ button.ghost {
   }
   100% {
     transform: translateX(350%);
+  }
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.skeleton-stat,
+.skeleton-block {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  min-height: 48px;
+}
+
+.skeleton-block {
+  margin-top: 8px;
+  min-height: 72px;
+}
+
+.skeleton-block.short {
+  min-height: 40px;
+  width: 70%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton-stat,
+  .skeleton-block {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.04) 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      rgba(255, 255, 255, 0.04) 100%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
   }
 }
 
@@ -573,16 +1270,110 @@ button.ghost {
   min-width: 80px;
 }
 
-@media (max-width: 520px) {
+/* Responsive chrome — kept AFTER base fixed chrome rules so they win cascade. */
+@media (max-width: 1100px) {
+  :root {
+    --map-rail: 148px;
+  }
+
+  .hud-topbar .phase-chip {
+    max-width: min(160px, 22vw);
+  }
+}
+
+@media (max-width: 900px) {
+  /* Topbar full width except map rail; dock sits under topbar. */
+  .hud-topbar {
+    left: var(--chrome-gap);
+    right: calc(var(--map-rail) + var(--chrome-gap));
+    top: var(--chrome-gap);
+  }
+
+  body:has(#hud.collapsed) .hud-topbar {
+    left: var(--chrome-gap);
+  }
+
   #hud {
-    top: 8px;
-    left: 8px;
-    width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
+    top: calc(var(--topbar-height) + var(--chrome-gap) * 2);
+    max-height: calc(100vh - var(--topbar-height) - var(--chrome-gap) * 3);
+  }
+
+  /* Map controls stay in the reserved rail (top-right). */
+  .view-toggle {
+    top: var(--chrome-gap);
+    right: var(--chrome-gap);
+  }
+
+  .sim-date {
+    top: calc(var(--chrome-gap) + 48px);
+    right: var(--chrome-gap);
+  }
+}
+
+@media (max-width: 768px) {
+  #hud:not(.collapsed) {
+    width: min(var(--hud-width), calc(100vw - 16px));
+    max-width: 42vw;
+  }
+
+  .tab,
+  .fleet-chip,
+  .accel-btn,
+  .hud-toggle,
+  .view-toggle {
+    min-height: 36px;
+  }
+
+  /* Guided tip sits in free canvas, never under the dock. */
+  .guided-overlay {
+    left: max(var(--chrome-gap), calc(var(--hud-clip-right) + 4px));
+    right: auto;
+    bottom: var(--chrome-gap);
+    top: auto;
+    max-width: min(300px, calc(100vw - var(--hud-clip-right) - var(--map-rail) - 16px));
+  }
+
+  .globe-legend {
+    max-width: min(220px, calc(100vw - var(--hud-clip-right) - 24px));
+  }
+}
+
+@media (max-width: 520px) {
+  :root {
+    --map-rail: 132px;
+  }
+
+  #hud:not(.collapsed) {
+    top: calc(var(--topbar-height) + var(--chrome-gap) * 2);
+    left: var(--chrome-gap);
+    width: calc(100vw - var(--chrome-gap) * 2);
+    max-width: none;
+    max-height: calc(100vh - var(--topbar-height) - var(--chrome-gap) * 3);
   }
 
   .tab-bar {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .hud-topbar .time-toolbar .accel-btn {
+    min-width: 26px;
+    padding: 2px 3px;
+    font-size: 0.58rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast,
+  #view-fade,
+  .tab,
+  .progress-fill,
+  .loading-bar-fill,
+  #hud,
+  .onboarding,
+  .skeleton-stat,
+  .skeleton-block {
+    transition: none !important;
+    animation: none !important;
   }
 }
 /* Endgame + economy */
@@ -596,6 +1387,55 @@ button.ghost {
 
 #endscreen.victory h2 {
   color: var(--success);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #endscreen.victory .onboarding-card {
+    animation: victory-glow 2.5s ease-in-out infinite;
+  }
+
+  #endscreen.victory .onboarding-card::before {
+    content: "";
+    position: absolute;
+    inset: -2px;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      rgba(61, 214, 140, 0.35),
+      rgba(77, 163, 255, 0.2),
+      rgba(61, 214, 140, 0.35)
+    );
+    z-index: -1;
+    opacity: 0.6;
+    animation: victory-border 3s linear infinite;
+  }
+}
+
+#endscreen.victory .onboarding-card {
+  position: relative;
+}
+
+@keyframes victory-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.45),
+      0 0 24px rgba(61, 214, 140, 0.2);
+  }
+  50% {
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.45),
+      0 0 48px rgba(61, 214, 140, 0.45);
+  }
+}
+
+@keyframes victory-border {
+  0% {
+    filter: hue-rotate(0deg);
+  }
+  100% {
+    filter: hue-rotate(360deg);
+  }
 }
 
 #endscreen.game-over h2 {
@@ -739,6 +1579,31 @@ button.ghost {
   background-size: 6px 2px;
 }
 
+.lg-satellite {
+  background: #ffdd44;
+}
+.lg-pass {
+  background: var(--success);
+}
+.lg-station-idle {
+  background: #ff4466;
+}
+.lg-downlink {
+  background: #ff8844;
+}
+.lg-ref {
+  background: #aa66ff;
+}
+.lg-orbit {
+  background: var(--accent);
+}
+.lg-design {
+  background: #88bbff;
+}
+.lg-downlink-line {
+  background: var(--success);
+}
+
 .fatal-error {
   color: var(--danger);
   padding: 2rem;
@@ -758,34 +1623,48 @@ button.ghost {
 #view-fade.active {
   opacity: 1;
 }
+/* Map rail: exclusive top-right column (see --map-rail). */
 .view-toggle {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  top: var(--chrome-gap);
+  right: var(--chrome-gap);
   z-index: 30;
   background: rgba(10, 16, 28, 0.85);
   color: var(--text, #dfe8f5);
   border: 1px solid rgba(120, 150, 200, 0.35);
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 6px 10px;
+  min-height: 36px;
+  max-width: calc(var(--map-rail) - 4px);
+  width: auto;
+  margin: 0;
   font: inherit;
+  font-size: 0.78rem;
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .view-toggle:hover {
   border-color: rgba(150, 190, 255, 0.7);
 }
 .sim-date {
   position: fixed;
-  top: 52px;
-  right: 14px;
+  top: calc(var(--chrome-gap) + 44px);
+  right: var(--chrome-gap);
   z-index: 30;
   background: rgba(10, 16, 28, 0.85);
   border: 1px solid rgba(120, 150, 200, 0.25);
   border-radius: 6px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   font-family: var(--mono, monospace);
   font-size: 12px;
   color: #9fb4d8;
+  max-width: calc(var(--map-rail) - 4px);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .map-tooltip {
   position: fixed;
@@ -800,24 +1679,50 @@ button.ghost {
 }
 .map-infocard {
   position: fixed;
-  right: 14px;
-  bottom: 14px;
+  right: var(--chrome-gap);
+  /* Leave room if globe-legend is also on (legend sits lower-right). */
+  bottom: var(--chrome-gap);
   z-index: 30;
   min-width: 200px;
-  background: rgba(10, 16, 28, 0.9);
+  max-width: min(280px, calc(100vw - var(--hud-clip-right) - 24px));
+  background: rgba(10, 16, 28, 0.94);
   border: 1px solid rgba(120, 150, 200, 0.35);
   border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 13px;
+  padding: 10px 12px;
+  font-size: 12px;
   color: #cfe0f5;
+  pointer-events: auto;
+}
+
+/* When legend is visible, park the map card above it. */
+body:has(#globe-legend:not(.hidden)) .map-infocard:not(.hidden) {
+  bottom: calc(var(--chrome-gap) + 180px);
 }
 .map-infocard h3 {
-  margin: 0 0 6px;
-  font-size: 15px;
+  margin: 0 0 4px;
+  font-size: 14px;
 }
 .map-infocard .focus {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #ffdd44;
+}
+.map-infocard .map-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.map-infocard .map-actions button {
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 0.72rem;
+}
+.map-infocard .map-hint {
+  margin: 6px 0 0;
+  font-size: 0.65rem;
+  color: var(--muted);
+  line-height: 1.35;
 }
 .map-label {
   font-size: 11px;
@@ -825,14 +1730,19 @@ button.ghost {
   text-shadow: 0 1px 3px #000;
   pointer-events: none;
 }
-/* Label layers: hide the inactive view's CSS2D labels. */
-.globe-labels.map-mode > div > .station-label,
-.globe-labels.map-mode > div > .ref-label,
-.globe-labels.map-mode > div:not(:has(.map-label)) {
-  display: none;
+/*
+ * Label layers: hide the inactive view's CSS2D labels.
+ * CSS2DRenderer writes inline `display` each frame for the *active* scene only;
+ * the other view's labels keep their last inline style — so we need !important
+ * to force-hide them, otherwise e.g. "Mars" sticks on screen in body view.
+ * Elements are direct children of `.globe-labels` (no wrapper div).
+ */
+.globe-labels.map-mode .station-label,
+.globe-labels.map-mode .ref-label {
+  display: none !important;
 }
 .globe-labels:not(.map-mode) .map-label {
-  display: none;
+  display: none !important;
 }
 .globe-legend.map-hidden {
   display: none;
@@ -841,9 +1751,9 @@ button.ghost {
 /* ---- Fleet strip (M14) ---- */
 .fleet-strip {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
   flex-wrap: wrap;
-  padding: 6px 0;
+  align-items: center;
 }
 .fleet-strip:empty {
   display: none;
@@ -851,15 +1761,29 @@ button.ghost {
 .fleet-chip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  min-height: 28px;
+  width: auto;
+  margin: 0;
   border: 1px solid rgba(120, 150, 200, 0.3);
-  border-radius: 14px;
+  border-radius: 10px;
   background: rgba(14, 20, 34, 0.85);
   color: #cfe0f5;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
+}
+
+.fleet-chip .chip-phase {
+  font-size: 0.62rem;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
 }
 .fleet-chip.selected {
   border-color: #ffdd44;
@@ -889,18 +1813,20 @@ button.ghost {
 }
 
 /* ---- Guided missions (M15) ---- */
+/* Sit in the free canvas to the right of the dock, not under it. */
 .guided-overlay {
   position: fixed;
-  left: 14px;
-  bottom: 14px;
+  left: max(var(--chrome-gap), calc(var(--hud-clip-right) + 4px));
+  bottom: var(--chrome-gap);
   z-index: 25;
-  max-width: 300px;
+  max-width: min(300px, calc(100vw - var(--hud-clip-right) - var(--map-rail) - 16px));
   background: rgba(10, 16, 28, 0.92);
   border: 1px solid rgba(255, 221, 68, 0.4);
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 12.5px;
   color: #cfe0f5;
+  pointer-events: none;
 }
 .guided-overlay h4 {
   margin: 0 0 6px;

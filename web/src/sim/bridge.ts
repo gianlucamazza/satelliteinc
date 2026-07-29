@@ -10,10 +10,19 @@ import type { GameContent, SimEvent, Snapshot } from "../types.ts";
 
 let ready = false;
 
-export async function loadSim(content: GameContent): Promise<void> {
+export async function initWasm(): Promise<void> {
   await init();
+}
+
+export function initSim(content: GameContent): void {
   simInit(JSON.stringify(content));
   ready = true;
+}
+
+/** @deprecated Use initWasm + initSim for staged loading. */
+export async function loadSim(content: GameContent): Promise<void> {
+  await initWasm();
+  initSim(content);
 }
 
 export function isReady(): boolean {

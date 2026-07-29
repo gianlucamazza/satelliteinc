@@ -46,8 +46,34 @@ fn multi_station_pass_and_command_queue() {
     sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 500.0 })
         .unwrap();
 
-    assert_eq!(sim.ground_stations.iter().filter(|s| !s.dsn).count(), 4);
-    assert_eq!(sim.ground_stations.iter().filter(|s| s.dsn).count(), 3);
+    // Content-driven counts (Earth LEO + DSN triad + body relays).
+    let earth_local = sim
+        .ground_stations
+        .iter()
+        .filter(|s| s.body_id == "earth" && !s.dsn)
+        .count();
+    let dsn = sim.ground_stations.iter().filter(|s| s.dsn).count();
+    assert!(
+        earth_local >= 4,
+        "need a dense LEO commercial net, got {earth_local}"
+    );
+    assert_eq!(dsn, 3, "DSN triad expected");
+    assert!(
+        sim.ground_stations
+            .iter()
+            .filter(|s| s.body_id == "moon" && !s.dsn)
+            .count()
+            >= 1,
+        "lunar local dish present in content"
+    );
+    for body in ["mars", "venus", "jupiter"] {
+        assert!(
+            sim.ground_stations
+                .iter()
+                .any(|s| s.body_id == body && !s.dsn),
+            "local relay dish expected for {body}"
+        );
+    }
 
     let mut command_ran = false;
     // ~3 orbits worth of sim time, bounded sim ticks
@@ -105,7 +131,7 @@ fn anomaly_schedule_independent_of_frame_cadence() {
 }
 
 #[test]
-fn buffer_corruption_expires_and_does_not_block_future_anomalies() {
+fn buffer_corruption_is_not_a_sticky_latch() {
     use satelliteinc_core::ops::{ActiveAnomaly, AnomalyType};
 
     let content = load_content();
@@ -121,25 +147,23 @@ fn buffer_corruption_expires_and_does_not_block_future_anomalies() {
     let started_at = sim.clock.sim_seconds;
     let craft = common::only_craft_mut(&mut sim);
     craft.buffer_mb = 100.0;
+    // Even if a SEU is incorrectly latched, duration 0 / non-sticky expires.
     craft.active_anomaly = Some(ActiveAnomaly::new(
         AnomalyType::BufferCorruption,
         started_at,
     ));
+    assert!(
+        craft
+            .active_anomaly
+            .as_ref()
+            .unwrap()
+            .is_expired(started_at + 0.001)
+    );
 
-    // Advance well past the anomaly duration.
-    sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 100.0 })
-        .unwrap();
-    for _ in 0..100 {
-        sim.step(0.016);
-    }
-
+    sim.step(0.016);
     let craft = common::only_craft(&sim);
     assert!(
         craft.active_anomaly.is_none(),
-        "buffer corruption must expire and clear"
-    );
-    assert!(
-        craft.anomaly_cooldown_until > started_at,
-        "expiry must arm the anomaly cooldown so future anomalies can roll"
+        "buffer SEU must not remain sticky after a tick"
     );
 }

@@ -4,7 +4,7 @@ mod visibility;
 
 pub use anomaly::{
     ANOMALY_COOLDOWN_SECONDS, ANOMALY_PHASE_STRIDE_SECONDS, ActiveAnomaly, AnomalyType,
-    roll_anomaly,
+    AnomalyWeights, roll_anomaly, roll_anomaly_weighted,
 };
 pub use command::{CommandType, QueuedCommand, execute_command};
 pub use visibility::{elevation_deg, geodetic_to_ecef_km, is_in_pass, seconds_until_pass};
@@ -23,6 +23,8 @@ pub struct GroundStation {
     pub bandwidth_mbps: f64,
     pub body_id: String,
     pub dsn: bool,
+    /// Campaign tech gate (`None` = always available).
+    pub requires_tech: Option<String>,
 }
 
 impl From<&GroundStationDef> for GroundStation {
@@ -36,6 +38,7 @@ impl From<&GroundStationDef> for GroundStation {
             bandwidth_mbps: def.bandwidth_mbps,
             body_id: def.body_id.clone(),
             dsn: def.dsn,
+            requires_tech: def.requires_tech.clone(),
         }
     }
 }

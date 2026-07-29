@@ -1,7 +1,7 @@
 //! M13: the Jupiter finale — eccentric capture physics, RTG power,
 //! radiation upsets, and the last Program gate.
 
-use satelliteinc_core::{BodyRegistry, SimState, action::PlayerAction};
+use satelliteinc_core::{BodyRegistry, SimEvent, SimState, action::PlayerAction};
 
 mod common;
 use common::load_content;
@@ -58,6 +58,8 @@ fn rtg_keeps_power_positive_in_eclipse() {
 
 #[test]
 fn radiation_upset_wipes_a_fifth_of_the_buffer() {
+    use satelliteinc_core::spacecraft::PayloadMode;
+
     // Sandbox craft staged directly at Jupiter (unified sandbox).
     let mut sim = common::sandbox_at("jupiter", 1_500_000.0, 10.0);
     let craft_id = sim.fleet.last().unwrap().id;
@@ -66,35 +68,50 @@ fn radiation_upset_wipes_a_fifth_of_the_buffer() {
         let craft = common::only_craft_mut(&mut sim);
         craft.buffer_mb = 1_000.0;
         craft.anomaly_cooldown_until = 0.0;
+        // Freeze imaging so buffer stays fixed until the SEU hits.
+        craft.payload_mode = PayloadMode::Safe;
     }
     sim.apply_action(PlayerAction::SetTimeAccel {
         multiplier: 1_000.0,
     })
     .unwrap();
-    // Jupiter anomaly rate 2.0 halves the 4000 s bucket; bucket 2 is a
-    // buffer corruption. Run until one fires.
+    // Jupiter weights favor SEU; buffer corruption is a one-shot event (not sticky).
     let mut wiped = None;
-    for _ in 0..800 {
+    for _ in 0..4_000 {
+        let before = common::only_craft(&sim).buffer_mb;
         sim.step(0.016);
-        let craft = common::only_craft(&sim);
-        if let Some(a) = &craft.active_anomaly {
-            if a.kind == satelliteinc_core::ops::AnomalyType::BufferCorruption {
-                wiped = Some((a.label().to_string(), craft.buffer_mb));
-                break;
+        for ev in sim.drain_events() {
+            if let SimEvent::AnomalyStarted {
+                kind: satelliteinc_core::ops::AnomalyType::BufferCorruption,
+                label,
+                ..
+            } = ev
+            {
+                let buffer_after = common::only_craft(&sim).buffer_mb;
+                wiped = Some((label, before, buffer_after));
             }
-            // Clear other anomalies instantly to reach the corruption bucket.
+        }
+        // Clear sticky faults so SEU rolls can keep firing.
+        if common::only_craft(&sim).active_anomaly.is_some() {
             common::only_craft_mut(&mut sim).active_anomaly = None;
             common::only_craft_mut(&mut sim).anomaly_cooldown_until = 0.0;
         }
+        if wiped.is_some() {
+            break;
+        }
     }
-    let (label, buffer_after) = wiped.expect("a radiation upset fires");
+    let (label, before, after) = wiped.expect("a radiation upset fires");
     assert_eq!(label, "Radiation upset");
-    // 20% of whatever was in the buffer at the moment it fired is gone —
-    // the craft kept imaging before the hit, so check the wipe factor by
-    // reconstructing: after = before_at_hit * 0.8, and imaging adds little
-    // within one tick. The buffer started at 1000 and only grew, so a 25%
-    // (default) wipe would leave < 790 only if buffer stayed ~1000.
-    assert!(buffer_after > 780.0, "wiped too much: {buffer_after}");
+    // Jupiter flavor wipes 20% of the buffer at hit time.
+    let ratio = after / before;
+    assert!(
+        (0.78..=0.82).contains(&ratio),
+        "expected ~20% wipe, before={before} after={after} ratio={ratio}"
+    );
+    assert!(
+        common::only_craft(&sim).active_anomaly.is_none(),
+        "SEU must not leave a sticky latch"
+    );
 }
 
 #[test]

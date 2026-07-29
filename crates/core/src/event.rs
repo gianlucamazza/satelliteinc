@@ -106,6 +106,36 @@ pub enum SimEvent {
         contract_id: String,
         craft_id: Option<u32>,
     },
+    /// A rival opened a contest on a marketplace offer.
+    ContractContested {
+        contract_id: String,
+        competitor_id: String,
+        competitor_name: String,
+        ends_at_sim_seconds: f64,
+    },
+    /// Contest window elapsed; rival took the contract for a cooldown.
+    ContractClaimedByRival {
+        contract_id: String,
+        competitor_id: String,
+        competitor_name: String,
+    },
+    /// Player paid a rush-bid premium and accepted a contested offer.
+    RushBidWon {
+        contract_id: String,
+        premium_usd: f64,
+        competitor_id: String,
+    },
+    /// A global space-weather / pressure event began.
+    WorldEventStarted {
+        event_id: String,
+        name: String,
+        ends_at_sim_seconds: f64,
+    },
+    /// An active world event expired.
+    WorldEventEnded {
+        event_id: String,
+        name: String,
+    },
     GameWon,
     GameOver {
         reason: GameOutcome,

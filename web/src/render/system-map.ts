@@ -2,21 +2,13 @@ import * as THREE from "three";
 import { CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import type { CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import type { BodySnapshot, Snapshot } from "../types.ts";
+import { BODY_COLORS, RENDER_COLORS } from "./colors.ts";
 
 // Radial power-law compression: angles stay TRUE (windows are about phase
 // angles), radii are squashed so LEO and Jupiter fit one orthographic view.
 // K normalizes Earth's orbit to 10 render units.
 const COMPRESS_EXP = 0.45;
 const K = 10 / Math.pow(1.495_982_612e8, COMPRESS_EXP);
-
-const BODY_COLORS: Record<string, number> = {
-  sun: 0xffcc44,
-  earth: 0x4da3ff,
-  moon: 0xaaaaaa,
-  venus: 0xd9b078,
-  mars: 0xff6644,
-  jupiter: 0xc8a678,
-};
 
 function compress(rKm: number): number {
   return rKm <= 0 ? 0 : K * Math.pow(rKm, COMPRESS_EXP);
@@ -36,6 +28,19 @@ interface MapBody {
   hit: THREE.Mesh;
   label: CSS2DObject;
   orbitLine: THREE.LineLoop | null;
+}
+
+/** Contextual actions from the map info card (planet click). */
+export interface SystemMapCallbacks {
+  /** Sandbox design: stage the drawing-board craft at this body. */
+  onStageAtBody: (bodyId: string) => void;
+  /** On-orbit: set interplanetary transfer target (opens Transfer tab). */
+  onPlanTransfer: (bodyId: string) => void;
+  /** Select a fleet craft already at this body and open body view. */
+  onFocusCraft: (craftId: number) => void;
+  /** Switch from map to body view (no sim change). */
+  onOpenBodyView: () => void;
+  getSelectedCraftId: () => number;
 }
 
 /**
@@ -60,10 +65,15 @@ export class SystemMapView {
   private lastSnapshot: Snapshot | null = null;
   private viewSize = 26;
   private zoom = 1;
+  private readonly callbacks: SystemMapCallbacks | null;
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  constructor(
+    private readonly canvas: HTMLCanvasElement,
+    callbacks: SystemMapCallbacks | null = null,
+  ) {
+    this.callbacks = callbacks;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x03060c);
+    this.scene.background = new THREE.Color(RENDER_COLORS.mapBg);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 500);
     this.camera.position.set(0, 100, 0);
@@ -71,12 +81,12 @@ export class SystemMapView {
     this.camera.lookAt(0, 0, 0);
     this.applyFrustum();
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+    this.scene.add(new THREE.AmbientLight(RENDER_COLORS.white, 1.2));
 
     // Ring highlighting the craft's current body.
     const ringGeo = new THREE.RingGeometry(0.55, 0.7, 48);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffdd44,
+      color: RENDER_COLORS.focusRing,
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.9,
@@ -87,7 +97,7 @@ export class SystemMapView {
     this.scene.add(this.focusRing);
 
     const cruiseMat = new THREE.LineBasicMaterial({
-      color: 0xffaa44,
+      color: RENDER_COLORS.cruise,
       transparent: true,
       opacity: 0.9,
     });
@@ -96,7 +106,7 @@ export class SystemMapView {
     this.scene.add(this.cruiseLine);
     this.craftMarker = new THREE.Mesh(
       new THREE.SphereGeometry(0.22, 12, 12),
-      new THREE.MeshBasicMaterial({ color: 0xffdd44 }),
+      new THREE.MeshBasicMaterial({ color: RENDER_COLORS.satellite }),
     );
     this.craftMarker.visible = false;
     this.scene.add(this.craftMarker);
@@ -104,6 +114,9 @@ export class SystemMapView {
     this.tooltip = document.getElementById("map-tooltip");
     this.infoCard = document.getElementById("map-infocard");
     this.dateChip = document.getElementById("sim-date");
+    this.infoCard?.addEventListener("click", (e) => {
+      this.onInfoCardClick(e);
+    });
 
     canvas.addEventListener("pointermove", (e) => {
       this.onPointerMove(e);
@@ -146,6 +159,15 @@ export class SystemMapView {
   private activeFlag = false;
   setActive(active: boolean): void {
     this.activeFlag = active;
+    // CSS2DRenderer only updates labels for the scene it renders. When we
+    // leave map mode, force-hide every map label so it cannot stick on the
+    // shared label layer while the body view is shown.
+    for (const entry of this.bodies.values()) {
+      entry.label.visible = active;
+      if (!active) {
+        entry.label.element.style.display = "none";
+      }
+    }
     if (!active) {
       this.tooltip?.classList.add("hidden");
       this.infoCard?.classList.add("hidden");
@@ -194,6 +216,26 @@ export class SystemMapView {
     this.renderInfoCard();
   }
 
+  private onInfoCardClick(event: Event): void {
+    const btn = (event.target as HTMLElement).closest<HTMLElement>(
+      "[data-map-action]",
+    );
+    if (!btn || !this.selectedId || !this.callbacks) return;
+    const action = btn.dataset.mapAction;
+    const craftId = btn.dataset.craftId
+      ? Number(btn.dataset.craftId)
+      : undefined;
+    if (action === "stage") {
+      this.callbacks.onStageAtBody(this.selectedId);
+    } else if (action === "transfer") {
+      this.callbacks.onPlanTransfer(this.selectedId);
+    } else if (action === "focus" && craftId != null && Number.isFinite(craftId)) {
+      this.callbacks.onFocusCraft(craftId);
+    } else if (action === "view") {
+      this.callbacks.onOpenBodyView();
+    }
+  }
+
   private renderInfoCard(): void {
     if (!this.infoCard) return;
     const snap = this.lastSnapshot;
@@ -214,8 +256,79 @@ export class SystemMapView {
       );
     })();
     const lightMin = kmToEarth == null ? null : kmToEarth / 299_792.458 / 60;
+    const selectedId = this.callbacks?.getSelectedCraftId() ?? 0;
+    const selected =
+      snap.spacecraft.find((c) => c.id === selectedId) ??
+      snap.spacecraft[0] ??
+      null;
+    const craftHere = snap.spacecraft.filter(
+      (c) => c.body_id === body.id && c.phase !== "Design",
+    );
+    const designHere =
+      selected?.phase === "Design" && selected.body_id === body.id;
+    const canStage =
+      snap.game_mode === "sandbox" &&
+      selected?.phase === "Design" &&
+      body.id !== "sun" &&
+      selected.body_id !== body.id;
+    const canTransfer =
+      selected?.phase === "OnOrbit" &&
+      snap.transfers_unlocked &&
+      body.id !== "sun" &&
+      selected.body_id !== body.id;
+    const canViewHere =
+      selected != null &&
+      (selected.body_id === body.id || craftHere.some((c) => c.id === selected.id));
+
+    const actionBtns: string[] = [];
+    if (canStage) {
+      actionBtns.push(
+        `<button type="button" class="primary" data-map-action="stage">Stage design craft here</button>`,
+      );
+    }
+    if (canTransfer) {
+      actionBtns.push(
+        `<button type="button" class="primary" data-map-action="transfer">Plan transfer to ${escapeHtml(body.name)}</button>`,
+      );
+    }
+    for (const c of craftHere) {
+      if (c.id === selected?.id) {
+        actionBtns.push(
+          `<button type="button" data-map-action="view">Open body view</button>`,
+        );
+      } else {
+        actionBtns.push(
+          `<button type="button" data-map-action="focus" data-craft-id="${c.id}">Focus ${escapeHtml(c.name)}</button>`,
+        );
+      }
+    }
+    if (designHere) {
+      actionBtns.push(
+        `<button type="button" data-map-action="view">Open body view (design)</button>`,
+      );
+    }
+
+    let hint = "";
+    if (body.id === "sun") {
+      hint = "The Sun is not a staging target.";
+    } else if (snap.game_mode === "campaign" && selected?.phase === "Design") {
+      hint =
+        "Campaign: launch from Earth, then use Transfer (or Plan transfer) to reach other bodies.";
+    } else if (
+      selected?.phase === "OnOrbit" &&
+      !snap.transfers_unlocked &&
+      selected.body_id !== body.id
+    ) {
+      hint =
+        "Research Deep Space Operations (or use sandbox) to plan interplanetary transfers.";
+    } else if (selected?.phase === "Transfer") {
+      hint = "Craft is in cruise — warp to arrival, then operate at the destination.";
+    } else if (actionBtns.length === 0 && selected?.body_id === body.id) {
+      hint = "Your selected craft is already here.";
+    }
+
     const rows = [
-      `<h3>${body.name}</h3>`,
+      `<h3>${escapeHtml(body.name)}</h3>`,
       body.id === "sun" ? "" : `<div>Sun distance: ${au.toFixed(3)} AU</div>`,
       lightMin == null
         ? ""
@@ -223,9 +336,16 @@ export class SystemMapView {
       body.soi_radius_km == null
         ? ""
         : `<div>SOI: ${(body.soi_radius_km / 1000).toFixed(0)}k km</div>`,
-      snap.spacecraft[0]?.body_id === body.id
-        ? `<div class="focus">Your spacecraft operates here</div>`
+      craftHere.length
+        ? `<div class="focus">${craftHere.length} craft on station</div>`
+        : selected?.body_id === body.id
+          ? `<div class="focus">Selected craft is staged here</div>`
+          : "",
+      canViewHere ? "" : "",
+      actionBtns.length
+        ? `<div class="map-actions">${actionBtns.join("")}</div>`
         : "",
+      hint ? `<p class="map-hint">${escapeHtml(hint)}</p>` : "",
     ];
     this.infoCard.innerHTML = rows.join("");
     this.infoCard.classList.remove("hidden");
@@ -235,7 +355,7 @@ export class SystemMapView {
     let entry = this.bodies.get(body.id);
     if (entry) return entry;
 
-    const color = BODY_COLORS[body.id] ?? 0x8899aa;
+    const color = BODY_COLORS[body.id] ?? RENDER_COLORS.bodyDefault;
     const radius = body.id === "sun" ? 0.7 : 0.35;
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(radius, 20, 20),
@@ -270,7 +390,7 @@ export class SystemMapView {
       orbitLine = new THREE.LineLoop(
         new THREE.BufferGeometry().setFromPoints(pts),
         new THREE.LineBasicMaterial({
-          color: 0x334466,
+          color: RENDER_COLORS.orbitGuide,
           transparent: true,
           opacity: 0.8,
         }),
@@ -375,4 +495,12 @@ export class SystemMapView {
     renderer.render(this.scene, this.camera);
     labelRenderer.render(this.scene, this.camera);
   }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

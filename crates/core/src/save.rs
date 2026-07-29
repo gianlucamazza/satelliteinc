@@ -8,11 +8,13 @@ use crate::clock::SimClock;
 use crate::company::CompanyState;
 use crate::content::GameContent;
 use crate::error::SimError;
+use crate::market::{MarketState, market_enabled_for};
 use crate::ops::GroundStation;
 use crate::orbit::TlePropagator;
 use crate::spacecraft::{CraftId, Spacecraft};
+use crate::weather::WeatherState;
 
-pub const SAVE_VERSION: u32 = 4;
+pub const SAVE_VERSION: u32 = 6;
 
 /// One craft's pass-edge state, keyed by station id so the format survives
 /// station reordering between content versions.
@@ -30,6 +32,12 @@ pub struct SaveGame {
     pub spacecraft: Vec<Spacecraft>,
     pub next_craft_id: CraftId,
     pub pass_active: Vec<SavedPassState>,
+    /// Rival market (v5+; defaults for older saves).
+    #[serde(default)]
+    pub market: MarketState,
+    /// Space weather (v6+; defaults for older saves).
+    #[serde(default)]
+    pub weather: WeatherState,
 }
 
 impl SaveGame {
@@ -39,11 +47,43 @@ impl SaveGame {
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut v: Value = serde_json::from_str(json)?;
-        if v.get("version").and_then(Value::as_u64).unwrap_or(0) <= 3 {
+        let ver = v.get("version").and_then(Value::as_u64).unwrap_or(0);
+        if ver <= 3 {
             migrate_v3(&mut v);
+        }
+        if ver <= 4 {
+            migrate_v4_to_v5(&mut v);
+        }
+        if ver <= 5 {
+            migrate_v5_to_v6(&mut v);
         }
         serde_json::from_value(v)
     }
+}
+
+/// v4 → v5: add market state (empty; import rebuilds from content + mode).
+fn migrate_v4_to_v5(v: &mut Value) {
+    if v.get("market").is_none() {
+        v["market"] = serde_json::json!({
+            "enabled": true,
+            "rivals": [],
+            "contests": [],
+            "claims": []
+        });
+    }
+    v["version"] = Value::from(5u32);
+}
+
+/// v5 → v6: add weather state.
+fn migrate_v5_to_v6(v: &mut Value) {
+    if v.get("weather").is_none() {
+        v["weather"] = serde_json::json!({
+            "enabled": true,
+            "active": null,
+            "next_roll_sim_seconds": 0.0
+        });
+    }
+    v["version"] = Value::from(6u32);
 }
 
 /// v3 -> v4: the fleet turned every craft-shaped singleton into a
@@ -115,6 +155,8 @@ impl SimState {
             spacecraft: self.fleet.clone(),
             next_craft_id: self.next_craft_id,
             pass_active,
+            market: self.market.clone(),
+            weather: self.weather.clone(),
         }
     }
 
@@ -188,6 +230,31 @@ impl SimState {
             .unwrap_or(0)
             .max(save.next_craft_id);
 
+        let mut market = save.market;
+        if market.rivals.is_empty() {
+            // Pre-v5 or empty: seed from content using mode defaults.
+            market = MarketState::from_content(
+                &content,
+                market_enabled_for(company.game_mode, None),
+                save.clock.sim_seconds,
+            );
+        } else {
+            market.reconcile(&content, save.clock.sim_seconds);
+        }
+
+        let mut weather = save.weather;
+        // Fresh / migrated saves: seed schedule from content + mode.
+        if weather.next_roll_sim_seconds <= 0.0 && weather.active.is_none() {
+            weather = WeatherState::from_content(
+                &content,
+                WeatherState::weather_enabled_for(company.game_mode, None),
+                save.clock.sim_seconds,
+            );
+        } else if content.world_events.is_empty() {
+            weather.enabled = false;
+            weather.active = None;
+        }
+
         Ok(Self {
             clock: save.clock,
             company,
@@ -200,6 +267,8 @@ impl SimState {
             event_queue: Vec::new(),
             tle_propagators,
             ref_sat_cache: std::cell::RefCell::new(None),
+            market,
+            weather,
         })
     }
 }

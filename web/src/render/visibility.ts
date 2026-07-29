@@ -5,7 +5,12 @@ function hudClipRightPx(): number {
   if (hud) {
     return hud.getBoundingClientRect().right + 12;
   }
-  return 432;
+  const parsed = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue(
+      "--hud-clip-right",
+    ),
+  );
+  return Number.isFinite(parsed) ? parsed : 432;
 }
 
 /** True when the point lies on the hemisphere facing the camera. */

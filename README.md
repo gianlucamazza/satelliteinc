@@ -22,8 +22,15 @@ Browser-based satellite company simulator. Rust simulation core (WASM) + Three.j
 | M14 | The fleet: concurrent spacecraft and contracts with explicit 1:1 assignment, fleet strip UI, save v4 |
 | M15 | Mission Control slots, in-campaign guided missions, contextual onboarding, warp-to-next-event |
 | M16 | Service records and renaming, notification tiers with auto-pause, themed craft names |
+| M17 | Realism: J2 precession, solar flux 1/r², node-gated plane changes, light-time commands |
+| M18 | Ground network: body-local stations, tech-gated Lunar Nearside Relay |
+| M19 | Competitor market: contested offers, rush bids, rival claims (save v5+) |
+| M20 | World events: solar storms, DSN congestion, body-scoped weather (save v6) |
+| M21 | Content depth: 40 contracts, Career + Sandbox entries, Mars proximity net |
+| M24 | Unified Career — one progress spine; rivals/weather scale with programs |
+| M22 | Agency prestige ladder, goals board, victory rank |
 
-Textures: Earth/Moon from the three.js examples (NASA imagery); Mars from [Solar System Scope](https://www.solarsystemscope.com/textures/) (CC BY 4.0).
+Textures: Earth/Moon from the three.js examples (NASA imagery); Mars, Venus, and Jupiter from [Solar System Scope](https://www.solarsystemscope.com/textures/) (CC BY 4.0).
 
 ## Quick start
 

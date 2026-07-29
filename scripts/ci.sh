@@ -13,6 +13,11 @@ cd web
 pnpm install --frozen-lockfile
 pnpm run typecheck
 pnpm run lint
+pnpm run test
 pnpm run build
+# E2E: requires Chromium from `pnpm test:e2e:install` (cached after first run).
+if [[ "${SKIP_E2E:-}" != "1" ]]; then
+  pnpm run test:e2e
+fi
 
 echo "CI checks passed."

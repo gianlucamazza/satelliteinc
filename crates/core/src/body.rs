@@ -37,6 +37,7 @@ pub struct CelestialBody {
     pub injection_cost_multiplier: f64,
     pub has_atmosphere: bool,
     pub capture_eccentricity: f64,
+    pub j2: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +110,7 @@ impl BodyRegistry {
                 injection_cost_multiplier: def.injection_cost_multiplier,
                 has_atmosphere: def.has_atmosphere,
                 capture_eccentricity: def.capture_eccentricity,
+                j2: def.j2,
             });
         }
 
@@ -199,6 +201,20 @@ impl BodyRegistry {
             current = self.bodies[pidx].parent;
         }
         pos
+    }
+
+    /// Solar flux at the body relative to 1 AU (inverse-square law from the
+    /// real heliocentric distance — Mars ~0.43 and Jupiter ~0.037 emerge
+    /// from the ephemerides, not from a tuning knob).
+    #[must_use]
+    pub fn solar_flux_at(&self, idx: usize, sim_seconds: f64) -> f64 {
+        let pos = self.heliocentric_position_km(idx, sim_seconds);
+        let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+        if r < 1.0 {
+            return 1.0; // the sun itself (never hosts a craft's panels)
+        }
+        let ratio = crate::constants::AU_KM / r;
+        ratio * ratio
     }
 
     /// Unit vector from the body toward the sun at `sim_seconds`.

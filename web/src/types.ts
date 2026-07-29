@@ -60,6 +60,52 @@ export interface ContractOffer {
   body_id: string;
   available: boolean;
   repeat: boolean;
+  /** Rival display name currently contesting this offer. */
+  contested_by?: string | null;
+  contest_ends_sim_seconds?: number | null;
+  /** Rival holding the offer after a claim. */
+  claimed_by?: string | null;
+  /** Cash premium for rush bid (0 if not contested). */
+  rush_bid_premium_usd?: number;
+}
+
+export interface CompetitorSnapshot {
+  id: string;
+  name: string;
+  contracts_won: number;
+  aggressiveness: number;
+  focus_bodies: string[];
+  next_action_sim_seconds: number;
+}
+
+export interface WorldEventSnapshot {
+  event_id: string;
+  name: string;
+  description: string;
+  ends_at_sim_seconds: number;
+  body_ids: string[];
+  solar_penalty: number;
+  anomaly_rate_multiplier: number;
+  bandwidth_multiplier: number;
+  dsn_only: boolean;
+}
+
+export interface PrestigeGoal {
+  id: string;
+  label: string;
+  done: boolean;
+}
+
+export interface PrestigeSnapshot {
+  score: number;
+  rank: string;
+  rank_label: string;
+  contracts_completed: number;
+  programs_completed: number;
+  contested_wins: number;
+  lifetime_revenue_usd: number;
+  next_rank_at: number | null;
+  goals: PrestigeGoal[];
 }
 
 export interface HohmannPlanSnapshot {
@@ -150,6 +196,8 @@ export interface SpacecraftSnapshot {
   total_delta_v_used_km_s: number;
   pending_hohmann: PendingHohmann | null;
   at_apsis: boolean;
+  /** True near an ascending/descending node (plane-change burn window). */
+  at_node: boolean;
   seconds_to_perigee: number | null;
   seconds_to_apogee: number | null;
   hohmann_preview: HohmannPlanSnapshot | null;
@@ -161,6 +209,8 @@ export interface SpacecraftSnapshot {
   anomaly_label: string | null;
   /** One-way light time to Earth (flavor; ~0 in Earth orbit). */
   light_delay_seconds: number;
+  /** Solar flux at the craft's body relative to 1 AU (inverse-square). */
+  solar_flux: number;
   /** This craft's daily ops line (company multiplier applied). */
   ops_cost_usd_per_day: number;
   /** Service record. */
@@ -210,6 +260,10 @@ export interface StationSnapshot {
   bandwidth_mbps: number;
   body_id: string;
   dsn: boolean;
+  /** Campaign tech required (`null` if always open). */
+  requires_tech: string | null;
+  /** Whether the company may use this station right now. */
+  unlocked: boolean;
 }
 
 export interface Snapshot {
@@ -238,6 +292,18 @@ export interface Snapshot {
   /** Earliest upcoming fleet event (warp-to-next-event target). */
   next_event_sim_seconds: number | null;
   programs: ProgramSnapshot[];
+  /** Mission Control capacity (concurrent flights / contract slots). */
+  max_flights: number;
+  /** Craft currently on orbit or in transit. */
+  active_flights: number;
+  /** Whether rival market pressure is active. */
+  market_enabled?: boolean;
+  /** Rival firms scoreboard (M19). */
+  competitors?: CompetitorSnapshot[];
+  /** Active space-weather event (M20). */
+  active_world_event?: WorldEventSnapshot | null;
+  /** Agency prestige (M22). */
+  prestige?: PrestigeSnapshot;
 }
 
 export interface ProgramSnapshot {
@@ -269,6 +335,10 @@ export interface BusTemplate {
   isp_s: number;
   /** Constant RTG watts, indifferent to sunlight (0 = solar only). */
   rtg_power_w?: number;
+  /** Onboard recorder capacity (MB). */
+  buffer_mb?: number;
+  /** Peak imager output (MB/s), derated by payload mode. */
+  imaging_rate_mb_s?: number;
   ops_cost_usd_per_day: number;
   unlocked_by_default?: boolean;
 }
@@ -307,6 +377,7 @@ export interface GroundStationDef {
   bandwidth_mbps?: number;
   body_id?: string;
   dsn?: boolean;
+  requires_tech?: string | null;
 }
 
 export interface TleEntry {
@@ -395,6 +466,32 @@ export type SimEvent =
       contract_id: string;
       craft_id: number | null;
     }
+  | {
+      type: "contract_contested";
+      contract_id: string;
+      competitor_id: string;
+      competitor_name: string;
+      ends_at_sim_seconds: number;
+    }
+  | {
+      type: "contract_claimed_by_rival";
+      contract_id: string;
+      competitor_id: string;
+      competitor_name: string;
+    }
+  | {
+      type: "rush_bid_won";
+      contract_id: string;
+      premium_usd: number;
+      competitor_id: string;
+    }
+  | {
+      type: "world_event_started";
+      event_id: string;
+      name: string;
+      ends_at_sim_seconds: number;
+    }
+  | { type: "world_event_ended"; event_id: string; name: string }
   | { type: "anomaly_started"; craft_id: number; kind: string; label: string }
   | { type: "anomaly_cleared"; craft_id: number; kind: string }
   | {

@@ -5,12 +5,16 @@ import { ViewManager } from "./render/view-manager.ts";
 import {
   exportSave,
   importSave,
-  loadSim,
+  initSim,
+  initWasm,
   pullEvents,
   simAction,
   simStep,
 } from "./sim/bridge.ts";
 import type { GameContent, SimEvent, Snapshot } from "./types.ts";
+import { isModalOpen } from "./ui/focus-trap.ts";
+import { HudLayout } from "./ui/hud-layout.ts";
+import { LoadingController } from "./ui/loading.ts";
 import { confirmModal } from "./ui/modal.ts";
 import { Onboarding } from "./ui/onboarding.ts";
 import { GuidedMissions } from "./ui/guided.ts";
@@ -53,13 +57,14 @@ function loadSettings(): Settings {
 }
 
 async function main(): Promise<void> {
-  const loadingEl = document.getElementById("loading")!;
+  const loading = new LoadingController();
+  loading.setStage("wasm");
   const canvas = document.getElementById("globe") as HTMLCanvasElement;
 
   const settings = loadSettings();
   let autoDownlink = settings.autoDownlink;
-  const autoPauseArrival = settings.autoPauseArrival;
-  const autoPauseAnomaly = settings.autoPauseAnomaly;
+  let autoPauseArrival = settings.autoPauseArrival;
+  let autoPauseAnomaly = settings.autoPauseAnomaly;
 
   function maybeAutoPause(kind: "arrival" | "anomaly"): void {
     const enabled = kind === "arrival" ? autoPauseArrival : autoPauseAnomaly;
@@ -79,6 +84,8 @@ async function main(): Promise<void> {
         SETTINGS_KEY,
         JSON.stringify({
           autoDownlink,
+          autoPauseArrival,
+          autoPauseAnomaly,
           showTleRefs,
           showLegend,
           timeAccelBeforePause,
@@ -119,7 +126,11 @@ async function main(): Promise<void> {
       }
       if (
         runAction(
-          { type: "select_downlink_station", craft_id: panel.getSelectedCraftId(), station_id: stationId },
+          {
+            type: "select_downlink_station",
+            craft_id: panel.getSelectedCraftId(),
+            station_id: stationId,
+          },
           "Station select failed",
         )
       ) {
@@ -129,10 +140,20 @@ async function main(): Promise<void> {
     },
     showTleRefs: () => showTleRefs,
   });
-  const views = new ViewManager(globe, canvas);
 
-  await loadSim(content);
-  loadingEl.classList.add("hidden");
+  await initWasm();
+  loading.setStage("sim");
+  initSim(content);
+
+  loading.setStage("world");
+  await globe.preloadBody("earth");
+  new HudLayout();
+
+  const saveImportInput = document.createElement("input");
+  saveImportInput.type = "file";
+  saveImportInput.accept = ".json,application/json";
+  saveImportInput.hidden = true;
+  document.body.appendChild(saveImportInput);
 
   const panel = new HudPanel(content, {
     onSelectBus: (busId) => {
@@ -149,21 +170,59 @@ async function main(): Promise<void> {
         "Set orbit failed",
       );
     },
-    onAcceptContract: (contractId) => {
+    onAcceptContract: (contractId, craftId) => {
       try {
         snapshot = simAction({
           type: "accept_contract",
           contract_id: contractId,
+          ...(craftId != null ? { assigned_craft_id: craftId } : {}),
         });
         panel.update(snapshot);
         panel.logEvent("Contract accepted", "contract");
+        panel.markTabAttention("ops");
       } catch (e) {
         panel.logError(`Contract failed: ${errorText(e)}`);
       }
     },
+    onRushBid: (contractId, craftId) => {
+      try {
+        snapshot = simAction({
+          type: "rush_bid",
+          contract_id: contractId,
+          ...(craftId != null ? { assigned_craft_id: craftId } : {}),
+        });
+        panel.update(snapshot);
+        panel.logEvent("Rush bid won — contract secured", "contract");
+        panel.showToast("Rush bid secured", "success");
+        panel.markTabAttention("ops");
+      } catch (e) {
+        panel.logError(`Rush bid failed: ${errorText(e)}`);
+      }
+    },
+    onAssignContract: (contractId, craftId) => {
+      try {
+        snapshot = simAction({
+          type: "assign_contract",
+          contract_id: contractId,
+          craft_id: craftId,
+        });
+        panel.update(snapshot);
+        panel.logEvent(
+          craftId == null
+            ? `Contract unassigned: ${contractId}`
+            : `Contract assigned to craft ${craftId}`,
+          "contract",
+        );
+      } catch (e) {
+        panel.logError(`Assign failed: ${errorText(e)}`);
+      }
+    },
     onLaunch: () => {
       try {
-        snapshot = simAction({ type: "launch", craft_id: panel.getSelectedCraftId() });
+        snapshot = simAction({
+          type: "launch",
+          craft_id: panel.getSelectedCraftId(),
+        });
         panel.update(snapshot);
         panel.logEvent("Satellite launched!", "contract");
         panel.showToast(
@@ -176,7 +235,10 @@ async function main(): Promise<void> {
       }
     },
     onToggleDownlink: (active) => {
-      runAction({ type: "set_downlink", craft_id: panel.getSelectedCraftId(), active }, "Downlink toggle failed");
+      runAction(
+        { type: "set_downlink", craft_id: panel.getSelectedCraftId(), active },
+        "Downlink toggle failed",
+      );
     },
     onTimeAccel: (multiplier) => {
       if (multiplier > 0) {
@@ -187,7 +249,11 @@ async function main(): Promise<void> {
     },
     onProgradeBurn: (deltaV) => {
       try {
-        snapshot = simAction({ type: "prograde_burn", craft_id: panel.getSelectedCraftId(), delta_v_km_s: deltaV });
+        snapshot = simAction({
+          type: "prograde_burn",
+          craft_id: panel.getSelectedCraftId(),
+          delta_v_km_s: deltaV,
+        });
         panel.update(snapshot);
         panel.logEvent(
           `Prograde +${(deltaV * 1000).toFixed(0)} m/s`,
@@ -199,7 +265,11 @@ async function main(): Promise<void> {
     },
     onRetrogradeBurn: (deltaV) => {
       try {
-        snapshot = simAction({ type: "retrograde_burn", craft_id: panel.getSelectedCraftId(), delta_v_km_s: deltaV });
+        snapshot = simAction({
+          type: "retrograde_burn",
+          craft_id: panel.getSelectedCraftId(),
+          delta_v_km_s: deltaV,
+        });
         panel.update(snapshot);
         panel.logEvent(
           `Retrograde −${(deltaV * 1000).toFixed(0)} m/s`,
@@ -211,13 +281,20 @@ async function main(): Promise<void> {
     },
     onSetManeuverTarget: (altitude) => {
       runAction(
-        { type: "set_maneuver_target", craft_id: panel.getSelectedCraftId(), target_altitude_km: altitude },
+        {
+          type: "set_maneuver_target",
+          craft_id: panel.getSelectedCraftId(),
+          target_altitude_km: altitude,
+        },
         "Maneuver target failed",
       );
     },
     onStartHohmann: () => {
       try {
-        snapshot = simAction({ type: "start_hohmann", craft_id: panel.getSelectedCraftId() });
+        snapshot = simAction({
+          type: "start_hohmann",
+          craft_id: panel.getSelectedCraftId(),
+        });
         panel.update(snapshot);
         panel.logEvent("Hohmann burn 1 — coast to next apsis", "contract");
       } catch (e) {
@@ -226,7 +303,10 @@ async function main(): Promise<void> {
     },
     onCompleteHohmann: () => {
       try {
-        snapshot = simAction({ type: "complete_hohmann", craft_id: panel.getSelectedCraftId() });
+        snapshot = simAction({
+          type: "complete_hohmann",
+          craft_id: panel.getSelectedCraftId(),
+        });
         panel.update(snapshot);
         panel.logEvent("Hohmann transfer complete!", "contract");
         panel.showToast("Orbit circularized", "success");
@@ -234,19 +314,51 @@ async function main(): Promise<void> {
         panel.logError(`Circularize failed: ${errorText(e)}`);
       }
     },
+    onPlaneChange: (deltaInclinationDeg) => {
+      try {
+        snapshot = simAction({
+          type: "plane_change_burn",
+          craft_id: panel.getSelectedCraftId(),
+          delta_inclination_deg: deltaInclinationDeg,
+        });
+        panel.update(snapshot);
+        panel.logEvent(
+          `Plane change ${deltaInclinationDeg > 0 ? "+" : ""}${deltaInclinationDeg.toFixed(1)}° at node`,
+          "contract",
+        );
+      } catch (e) {
+        panel.logError(`Plane change failed: ${errorText(e)}`);
+      }
+    },
     onSelectDownlinkStation: (stationId) => {
       runAction(
-        { type: "select_downlink_station", craft_id: panel.getSelectedCraftId(), station_id: stationId },
+        {
+          type: "select_downlink_station",
+          craft_id: panel.getSelectedCraftId(),
+          station_id: stationId,
+        },
         "Station select failed",
       );
     },
     onSetPayloadMode: (mode) => {
-      runAction({ type: "set_payload_mode", craft_id: panel.getSelectedCraftId(), mode }, "Payload mode failed");
+      runAction(
+        {
+          type: "set_payload_mode",
+          craft_id: panel.getSelectedCraftId(),
+          mode,
+        },
+        "Payload mode failed",
+      );
     },
     onQueueCommand: (command, stationId) => {
       if (
         runAction(
-          { type: "queue_command", craft_id: panel.getSelectedCraftId(), command, station_id: stationId },
+          {
+            type: "queue_command",
+            craft_id: panel.getSelectedCraftId(),
+            command,
+            station_id: stationId,
+          },
           "Queue failed",
         )
       ) {
@@ -273,7 +385,12 @@ async function main(): Promise<void> {
         "Decommission",
       ).then((confirmed) => {
         if (!confirmed) return;
-        if (runAction({ type: "decommission", craft_id: panel.getSelectedCraftId() }, "Decommission failed")) {
+        if (
+          runAction(
+            { type: "decommission", craft_id: panel.getSelectedCraftId() },
+            "Decommission failed",
+          )
+        ) {
           panel.logEvent("Satellite decommissioned", "contract");
           panel.markTabAttention("mission");
         }
@@ -292,18 +409,36 @@ async function main(): Promise<void> {
       );
     },
     onRenameCraft: (craftId, name) => {
-      if (runAction({ type: "rename_craft", craft_id: craftId, name }, "Rename failed")) {
+      if (
+        runAction(
+          { type: "rename_craft", craft_id: craftId, name },
+          "Rename failed",
+        )
+      ) {
         panel.showToast(`Renamed to ${name}`, "info");
       }
     },
     onUnlockProgram: (programId) => {
-      if (runAction({ type: "unlock_program", program_id: programId }, "Program unlock failed")) {
-        panel.showToast("Program unlocked — new contracts in the marketplace", "success");
+      if (
+        runAction(
+          { type: "unlock_program", program_id: programId },
+          "Program unlock failed",
+        )
+      ) {
+        panel.showToast(
+          "Program unlocked — new contracts in the marketplace",
+          "success",
+        );
         panel.markTabAttention("mission");
       }
     },
     onBeginTransfer: () => {
-      if (runAction({ type: "begin_transfer", craft_id: panel.getSelectedCraftId() }, "Transfer failed")) {
+      if (
+        runAction(
+          { type: "begin_transfer", craft_id: panel.getSelectedCraftId() },
+          "Transfer failed",
+        )
+      ) {
         panel.showToast("Injection burn complete — cruise started", "success");
         views.setActive("map");
       }
@@ -312,7 +447,12 @@ async function main(): Promise<void> {
       const before = snapshot?.sim_days ?? 0;
       // WarpTo strides ~23 sim-days per call: re-issue until reached.
       for (let i = 0; i < 40; i++) {
-        if (!runAction({ type: "warp_to", target_sim_seconds: targetSimSeconds }, "Warp failed")) {
+        if (
+          !runAction(
+            { type: "warp_to", target_sim_seconds: targetSimSeconds },
+            "Warp failed",
+          )
+        ) {
           return;
         }
         if ((snapshot?.sim_seconds ?? 0) >= targetSimSeconds - 1) break;
@@ -321,14 +461,17 @@ async function main(): Promise<void> {
       panel.showToast(`Warped +${days.toFixed(1)} days`, "info");
     },
     onRestartCampaign: () => {
-      const scenarioId = content.scenarios?.[0]?.id ?? "campaign_start";
+      const scenarioId =
+        content.scenarios?.find((sc) => sc.game_mode === "campaign")?.id ??
+        content.scenarios?.[0]?.id ??
+        "career";
       if (
         runAction(
           { type: "load_scenario", scenario_id: scenarioId },
           "Restart failed",
         )
       ) {
-        panel.logEvent("Campaign restarted", "contract");
+        panel.logEvent("Career restarted", "contract");
         panel.setTab("mission");
       }
     },
@@ -339,6 +482,16 @@ async function main(): Promise<void> {
       autoDownlink = active;
       saveSettings();
     },
+    onAutoPauseArrivalChange: (active) => {
+      autoPauseArrival = active;
+      saveSettings();
+    },
+    onAutoPauseAnomalyChange: (active) => {
+      autoPauseAnomaly = active;
+      saveSettings();
+    },
+    getAutoPauseArrival: () => autoPauseArrival,
+    getAutoPauseAnomaly: () => autoPauseAnomaly,
     onShowTleRefsChange: (active) => {
       showTleRefs = active;
       globe.setShowTleRefs(active);
@@ -357,40 +510,132 @@ async function main(): Promise<void> {
           scenario_id: scenarioId,
         });
         panel.update(snapshot);
-        panel.logEvent(`Scenario loaded: ${scenarioId}`, "contract");
-        panel.showToast(`Scenario: ${scenarioId}`, "success");
+        const label =
+          content.scenarios?.find((sc) => sc.id === scenarioId)?.name ??
+          scenarioId;
+        panel.logEvent(`Started: ${label}`, "contract");
+        panel.showToast(label, "success");
         panel.markTabAttention("mission");
       } catch (e) {
-        panel.logError(`Scenario failed: ${errorText(e)}`);
+        panel.logError(`Start failed: ${errorText(e)}`);
       }
     },
     onExportSave: () => {
       try {
         const json = exportSave();
         localStorage.setItem("satelliteinc_save", json);
-        panel.showToast("Save exported to browser storage", "success");
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `satelliteinc-save-${new Date().toISOString().slice(0, 10)}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        panel.showToast("Save downloaded", "success");
         panel.logEvent("Game saved");
       } catch (e) {
         panel.logError(`Save failed: ${errorText(e)}`);
       }
     },
     onImportSave: () => {
-      try {
-        const json = localStorage.getItem("satelliteinc_save");
-        if (!json) {
-          panel.logError("No save found in browser storage");
-          return;
-        }
-        snapshot = importSave(json);
-        panel.update(snapshot);
-        panel.showToast("Save imported", "success");
-        panel.logEvent("Game loaded");
-      } catch (e) {
-        panel.logError(`Load failed: ${errorText(e)}`);
-      }
+      saveImportInput.click();
     },
     getAutoDownlink: () => autoDownlink,
     getShowTleRefs: () => showTleRefs,
+  });
+  panel.showSkeleton();
+
+  /** Default parking orbit for map → transfer staging. */
+  function captureOrbitFor(bodyId: string): {
+    altitude: number;
+    inclination: number;
+  } {
+    const defaults: Record<string, { altitude: number; inclination: number }> =
+      {
+        earth: { altitude: 400, inclination: 51.6 },
+        moon: { altitude: 100, inclination: 85 },
+        mars: { altitude: 400, inclination: 30 },
+        venus: { altitude: 400, inclination: 30 },
+        jupiter: { altitude: 5000, inclination: 20 },
+      };
+    return defaults[bodyId] ?? { altitude: 400, inclination: 30 };
+  }
+
+  const views = new ViewManager(globe, canvas, {
+    getSelectedCraftId: () => panel.getSelectedCraftId(),
+    onOpenBodyView: () => {
+      views.setActive("body");
+    },
+    onFocusCraft: (craftId) => {
+      panel.setSelectedCraftId(craftId);
+      views.setActive("body");
+      panel.showToast("Focused craft at selected body", "info");
+    },
+    onStageAtBody: (bodyId) => {
+      const craftId = panel.getSelectedCraftId();
+      if (
+        runAction(
+          { type: "set_design_body", craft_id: craftId, body_id: bodyId },
+          "Stage failed",
+        )
+      ) {
+        const parking = captureOrbitFor(bodyId);
+        runAction(
+          {
+            type: "set_orbit",
+            craft_id: craftId,
+            altitude_km: parking.altitude,
+            inclination_deg: parking.inclination,
+          },
+          "Set parking orbit failed",
+        );
+        panel.logEvent(`Staged design craft at ${bodyId}`, "contract");
+        panel.showToast(`Design craft staged at ${bodyId}`, "success");
+        views.setActive("body");
+        panel.markTabAttention("mission");
+      }
+    },
+    onPlanTransfer: (bodyId) => {
+      const parking = captureOrbitFor(bodyId);
+      if (
+        runAction(
+          {
+            type: "set_transfer_target",
+            craft_id: panel.getSelectedCraftId(),
+            body_id: bodyId,
+            capture_altitude_km: parking.altitude,
+            capture_inclination_deg: parking.inclination,
+          },
+          "Transfer target failed",
+        )
+      ) {
+        panel.setTab("transfer");
+        panel.logEvent(`Transfer target: ${bodyId}`, "contract");
+        panel.showToast(
+          `Transfer planned to ${bodyId} — check Transfer tab`,
+          "success",
+        );
+        // Stay on map so the player sees the target; they can press M for body.
+      }
+    },
+  });
+
+  saveImportInput.addEventListener("change", () => {
+    void (async () => {
+      const file = saveImportInput.files?.[0];
+      if (!file) return;
+      try {
+        const json = await file.text();
+        snapshot = importSave(json);
+        localStorage.setItem("satelliteinc_save", json);
+        panel.update(snapshot);
+        panel.showToast(`Loaded ${file.name}`, "success");
+        panel.logEvent(`Game loaded from ${file.name}`);
+      } catch (e) {
+        panel.logError(`Load failed: ${errorText(e)}`);
+      }
+      saveImportInput.value = "";
+    })();
   });
 
   if (DEBUG) {
@@ -491,6 +736,7 @@ async function main(): Promise<void> {
     ) {
       return;
     }
+    if (isModalOpen()) return;
     const accel = snapshot?.time_accel ?? 1;
     if (e.key === " ") {
       e.preventDefault();
@@ -543,15 +789,13 @@ async function main(): Promise<void> {
   let lastTime = performance.now();
 
   function craftName(id: number): string {
-    return (
-      snapshot?.spacecraft.find((c) => c.id === id)?.name ?? `craft ${id}`
-    );
+    return snapshot?.spacecraft.find((c) => c.id === id)?.name ?? `craft ${id}`;
   }
 
   function formatEvent(ev: SimEvent): string {
     const prefix =
       "craft_id" in ev && typeof ev.craft_id === "number"
-        ? `[${"craft_name" in ev ? (ev.craft_name) : craftName(ev.craft_id)}] `
+        ? `[${"craft_name" in ev ? ev.craft_name : craftName(ev.craft_id)}] `
         : "";
     return prefix + formatEventBody(ev);
   }
@@ -608,6 +852,16 @@ async function main(): Promise<void> {
         return `Program unlocked: ${ev.program_id.replace(/_/g, " ")}`;
       case "program_completed":
         return `PROGRAM COMPLETE: ${ev.program_id.replace(/_/g, " ")} — +$${ev.grant_usd.toLocaleString()} grant`;
+      case "contract_contested":
+        return `${ev.competitor_name} is bidding on ${ev.contract_id.replace(/_/g, " ")} — accept or rush bid before day ${(ev.ends_at_sim_seconds / 86_400).toFixed(1)}`;
+      case "contract_claimed_by_rival":
+        return `${ev.competitor_name} claimed ${ev.contract_id.replace(/_/g, " ")}`;
+      case "rush_bid_won":
+        return `Rush bid secured ${ev.contract_id.replace(/_/g, " ")} (−$${ev.premium_usd.toLocaleString()})`;
+      case "world_event_started":
+        return `Weather: ${ev.name} until day ${(ev.ends_at_sim_seconds / 86_400).toFixed(1)}`;
+      case "world_event_ended":
+        return `Weather cleared: ${ev.name}`;
       default:
         return JSON.stringify(ev);
     }
@@ -615,10 +869,12 @@ async function main(): Promise<void> {
 
   function eventClass(ev: SimEvent): string {
     if (ev.type.includes("pass")) return "pass";
-    if (ev.type.includes("contract") || ev.type.includes("tech"))
+    if (ev.type.includes("contract") || ev.type.includes("tech") || ev.type.includes("rush") || ev.type.includes("rival"))
       return "contract";
     if (ev.type.includes("anomaly")) return "pass";
-    if (ev.type === "contract_failed") return "error";
+    if (ev.type === "contract_failed" || ev.type === "contract_claimed_by_rival")
+      return "error";
+    if (ev.type === "contract_contested") return "pass";
     return "";
   }
 
@@ -691,6 +947,24 @@ async function main(): Promise<void> {
         if (ev.type === "game_over" || ev.type === "cash_negative") {
           panel.showToast(msg, "error");
         }
+        if (ev.type === "contract_contested") {
+          panel.showToast(msg, "info");
+          panel.markTabAttention("mission");
+        }
+        if (ev.type === "contract_claimed_by_rival") {
+          panel.showToast(msg, "error");
+          panel.markTabAttention("mission");
+        }
+        if (ev.type === "rush_bid_won") {
+          panel.showToast(msg, "success");
+        }
+        if (ev.type === "world_event_started") {
+          panel.showToast(msg, "info");
+          panel.markTabAttention("ops");
+        }
+        if (ev.type === "world_event_ended") {
+          panel.showToast(msg, "success");
+        }
       }
 
       views.update(snapshot, panel.getSelectedCraftId());
@@ -706,13 +980,17 @@ async function main(): Promise<void> {
   }
 
   snapshot = simStep(0);
-  const startScenario = content.scenarios?.[0]?.id ?? null;
+  const startScenario =
+    content.scenarios?.find((sc) => sc.game_mode === "campaign")?.id ??
+    content.scenarios?.[0]?.id ??
+    null;
   if (startScenario) {
     snapshot = simAction({ type: "load_scenario", scenario_id: startScenario });
   } else if (snapshot.spacecraft.length > 0) {
     snapshot = simAction({ type: "select_bus", bus_id: content.buses[0]!.id });
   }
   panel.update(snapshot);
+  loading.hide();
   requestAnimationFrame(frame);
 }
 

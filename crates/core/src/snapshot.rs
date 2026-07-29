@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::company::ActiveContract;
 use crate::company::{ContractOffer, GameMode, GameOutcome};
+use crate::market::CompetitorSnapshot;
+use crate::prestige::PrestigeSnapshot;
+use crate::weather::WorldEventSnapshot;
 use crate::ops::{AnomalyType, QueuedCommand};
 use crate::orbit::{KeplerElements, ReferenceSatellite};
 use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, PendingHohmann};
@@ -38,6 +41,22 @@ pub struct Snapshot {
     pub next_event_sim_seconds: Option<f64>,
     /// Campaign Programs with their gate status.
     pub programs: Vec<ProgramSnapshot>,
+    /// Mission Control capacity (concurrent flights / contract slots).
+    pub max_flights: u32,
+    /// Craft currently on orbit or in transit.
+    pub active_flights: u32,
+    /// Whether rival market pressure is active.
+    #[serde(default)]
+    pub market_enabled: bool,
+    /// Rival firms and their scoreboard (M19).
+    #[serde(default)]
+    pub competitors: Vec<CompetitorSnapshot>,
+    /// Active global space-weather event (M20), if any.
+    #[serde(default)]
+    pub active_world_event: Option<WorldEventSnapshot>,
+    /// Agency prestige ladder (M22).
+    #[serde(default)]
+    pub prestige: PrestigeSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +159,8 @@ pub struct SpacecraftSnapshot {
     pub total_delta_v_used_km_s: f64,
     pub pending_hohmann: Option<PendingHohmann>,
     pub at_apsis: bool,
+    /// Near an orbital node (plane changes are legal here).
+    pub at_node: bool,
     /// ETA to the next apsis passages (None off-orbit).
     pub seconds_to_perigee: Option<f64>,
     pub seconds_to_apogee: Option<f64>,
@@ -152,6 +173,8 @@ pub struct SpacecraftSnapshot {
     pub anomaly_label: Option<String>,
     /// One-way light time to Earth (flavor; 0 in Earth orbit).
     pub light_delay_seconds: f64,
+    /// Solar flux at the craft's body relative to 1 AU (inverse-square).
+    pub solar_flux: f64,
     /// This craft's daily ops line (company multiplier applied).
     pub ops_cost_usd_per_day: f64,
     /// Service record: contracts completed by this craft.
@@ -208,4 +231,8 @@ pub struct StationSnapshot {
     pub bandwidth_mbps: f64,
     pub body_id: String,
     pub dsn: bool,
+    /// Campaign tech required to use this dish (`None` if always open).
+    pub requires_tech: Option<String>,
+    /// Whether the company may use this station right now.
+    pub unlocked: bool,
 }

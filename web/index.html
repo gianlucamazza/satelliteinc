@@ -14,15 +14,15 @@
   </head>
   <body>
     <div id="app">
-      <canvas id="globe"></canvas>
+      <canvas id="globe" aria-hidden="true"></canvas>
       <div id="loading" class="loading-overlay">
         <div class="loading-card">
           <h2>Satellite Inc</h2>
-          <p>Loading orbital simulation…</p>
-          <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+          <p id="loading-stage">Initializing…</p>
+          <div class="loading-bar"><div id="loading-bar-fill" class="loading-bar-fill"></div></div>
         </div>
       </div>
-      <div id="onboarding" class="onboarding hidden">
+      <div id="onboarding" class="onboarding hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
         <div class="onboarding-card">
           <p id="onboarding-progress" class="onboarding-progress"></p>
           <h2 id="onboarding-title"></h2>
@@ -53,27 +53,36 @@
       <div id="map-infocard" class="map-infocard hidden"></div>
       <aside id="guided-overlay" class="guided-overlay hidden" aria-live="polite"></aside>
       <div id="globe-legend" class="globe-legend hidden" aria-label="Globe legend">
-        <div><span class="lg-dot" style="background:#ffdd44"></span> Satellite</div>
-        <div><span class="lg-dot" style="background:#3dd68c"></span> In pass / station OK</div>
-        <div><span class="lg-dot" style="background:#ff4466"></span> Station (no pass)</div>
-        <div><span class="lg-dot" style="background:#ff8844"></span> Downlinking / transfer</div>
-        <div><span class="lg-dot" style="background:#aa66ff"></span> Reference sat (ISS, Earth only)</div>
-        <div><span class="lg-line" style="background:#4da3ff"></span> Orbit trail</div>
-        <div><span class="lg-line dashed" style="background:#88bbff"></span> Design preview</div>
-        <div><span class="lg-line" style="background:#3dd68c"></span> Downlink line</div>
+        <div><span class="lg-dot lg-satellite"></span> Satellite</div>
+        <div><span class="lg-dot lg-pass"></span> In pass / station OK</div>
+        <div><span class="lg-dot lg-station-idle"></span> Station (no pass)</div>
+        <div><span class="lg-dot lg-downlink"></span> Downlinking / transfer</div>
+        <div><span class="lg-dot lg-ref"></span> Reference sat (ISS, Earth only)</div>
+        <div><span class="lg-line lg-orbit"></span> Orbit trail</div>
+        <div><span class="lg-line dashed lg-design"></span> Design preview</div>
+        <div><span class="lg-line lg-downlink-line"></span> Downlink line</div>
       </div>
       <div id="toast" class="toast" role="status" aria-live="assertive"></div>
-      <div id="hud">
-        <header>
-          <h1>Satellite Inc</h1>
-          <p id="phase-label">Design Lab</p>
-        </header>
-        <nav id="tab-bar" class="tab-bar"></nav>
-        <section id="fleet-strip" class="fleet-strip" aria-label="Fleet"></section>
-        <section id="status-panel"></section>
-        <section id="action-panel"></section>
-        <section id="event-log" aria-label="Event log" aria-live="polite"></section>
+      <!-- Top chrome: global telemetry + time control (not stacked in the left dock). -->
+      <div id="hud-topbar" class="hud-topbar" aria-label="Mission priority">
+        <div id="priority-strip" class="priority-strip"></div>
+        <div id="time-toolbar" class="time-toolbar" aria-label="Time acceleration"></div>
+        <p id="phase-label" class="phase-chip">Design Lab</p>
       </div>
+      <aside id="hud" aria-label="Mission control HUD">
+        <header class="hud-dock-header">
+          <div class="hud-header-row">
+            <h1>Satellite Inc</h1>
+            <button type="button" id="hud-toggle" class="hud-toggle" aria-expanded="true" aria-label="Collapse mission control HUD">◀</button>
+          </div>
+        </header>
+        <nav id="tab-bar" class="tab-bar" aria-label="Mission control"></nav>
+        <section id="fleet-strip" class="fleet-strip" aria-label="Fleet"></section>
+        <!-- Alerts + contract + craft telemetry (contextual). -->
+        <section id="status-panel" class="hud-status"></section>
+        <section id="action-panel" class="hud-actions"></section>
+        <section id="event-log" class="hud-log" aria-label="Event log" aria-live="polite"></section>
+      </aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -1,3 +1,5 @@
+import { releaseFocus, trapFocus } from "./focus-trap.ts";
+
 /** In-game confirm dialog reusing the onboarding-card styling. */
 export function confirmModal(
   title: string,
@@ -8,6 +10,7 @@ export function confirmModal(
     const overlay = document.createElement("div");
     overlay.className = "onboarding";
     overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
     overlay.innerHTML = `
       <div class="onboarding-card">
         <h2></h2>
@@ -25,8 +28,12 @@ export function confirmModal(
     )!;
     confirmBtn.textContent = confirmLabel;
 
+    const untrap = trapFocus(overlay);
+
     const done = (result: boolean) => {
       document.removeEventListener("keydown", onKey);
+      untrap();
+      releaseFocus();
       overlay.remove();
       resolve(result);
     };
@@ -35,12 +42,15 @@ export function confirmModal(
       if (e.key === "Enter") done(true);
     };
 
-    confirmBtn.addEventListener("click", () => { done(true); });
+    confirmBtn.addEventListener("click", () => {
+      done(true);
+    });
     overlay
       .querySelector('[data-act="cancel"]')!
-      .addEventListener("click", () => { done(false); });
+      .addEventListener("click", () => {
+        done(false);
+      });
     document.addEventListener("keydown", onKey);
     document.body.appendChild(overlay);
-    confirmBtn.focus();
   });
 }

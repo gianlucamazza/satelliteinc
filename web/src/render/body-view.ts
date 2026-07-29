@@ -11,8 +11,17 @@ import {
   stationLatLonToRender,
 } from "./coords.ts";
 import { bodyStyle } from "./body-specs.ts";
+import { prefersReducedMotion, RENDER_COLORS } from "./colors.ts";
+import { orbitTrailGeometry } from "./orbit-trail.ts";
 import { designOrbitPoints } from "./orbit-preview.ts";
+import {
+  createSatelliteMesh,
+  setSatelliteColor,
+} from "./satellite-mesh.ts";
 import { offsetAlongNormal, shouldShowLabel } from "./visibility.ts";
+
+const STATION_PICK_RADIUS = 0.14;
+const STATION_VIS_RADIUS = 0.05;
 
 // Marker/label lifts as fractions of the body radius so they stay visually
 // proportionate from the Moon (1737 km) to Jupiter (69911 km).
@@ -50,14 +59,16 @@ export class BodyView {
   private readonly orbitLine: THREE.Line;
   private readonly designOrbitLine: THREE.Line;
   private readonly downlinkLine: THREE.Line;
-  private readonly satellite: THREE.Mesh;
+  private readonly satellite: THREE.Group;
+  private readonly satMaterial: THREE.MeshBasicMaterial;
   private readonly fleetDots = new Map<number, THREE.Mesh>();
   private readonly stationMarkers: THREE.Group;
   private readonly stationLabels: THREE.Group;
   private readonly referenceSats: THREE.Group;
   private readonly starfield: THREE.Points;
   private readonly markerGeometry: THREE.SphereGeometry;
-  private readonly stationDots = new Map<string, THREE.Mesh>();
+  private readonly stationPickGeometry: THREE.SphereGeometry;
+  private readonly stationDots = new Map<string, THREE.Group>();
   private readonly stationLabelObjs = new Map<string, CSS2DObject>();
   private readonly refSats = new Map<number, RefSatObjects>();
   private readonly raycaster = new THREE.Raycaster();
@@ -75,7 +86,7 @@ export class BodyView {
     this.showTleRefs = options.showTleRefs?.() ?? true;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x050810);
+    this.scene.background = new THREE.Color(RENDER_COLORS.sceneBg);
 
     this.camera = new THREE.PerspectiveCamera(
       45,
@@ -106,8 +117,8 @@ export class BodyView {
       this.userControlUntil = performance.now() + 8000;
     });
 
-    const ambient = new THREE.AmbientLight(0x334466, 0.45);
-    this.sunLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    const ambient = new THREE.AmbientLight(RENDER_COLORS.ambient, 0.45);
+    this.sunLight = new THREE.DirectionalLight(RENDER_COLORS.white, 1.6);
     this.sunLight.position.set(12, 4, 8);
     this.scene.add(ambient, this.sunLight);
 
@@ -120,15 +131,16 @@ export class BodyView {
     this.scene.add(this.bodyFixed);
 
     const orbitMat = new THREE.LineBasicMaterial({
-      color: 0x4da3ff,
+      color: RENDER_COLORS.accent,
+      vertexColors: true,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.85,
     });
     this.orbitLine = new THREE.Line(new THREE.BufferGeometry(), orbitMat);
     this.scene.add(this.orbitLine);
 
     const designMat = new THREE.LineDashedMaterial({
-      color: 0x88bbff,
+      color: RENDER_COLORS.accentLight,
       transparent: true,
       opacity: 0.5,
       dashSize: 0.15,
@@ -142,7 +154,7 @@ export class BodyView {
     this.scene.add(this.designOrbitLine);
 
     const downlinkMat = new THREE.LineBasicMaterial({
-      color: 0x3dd68c,
+      color: RENDER_COLORS.success,
       transparent: true,
       opacity: 0.85,
     });
@@ -156,16 +168,20 @@ export class BodyView {
     this.downlinkLine.visible = false;
     this.scene.add(this.downlinkLine);
 
-    const satGeo = new THREE.SphereGeometry(0.08, 16, 16);
-    const satMat = new THREE.MeshBasicMaterial({
-      color: 0xffdd44,
+    this.satMaterial = new THREE.MeshBasicMaterial({
+      color: RENDER_COLORS.satellite,
       depthTest: true,
     });
-    this.satellite = new THREE.Mesh(satGeo, satMat);
+    this.satellite = createSatelliteMesh(this.satMaterial);
     this.satellite.visible = false;
     this.scene.add(this.satellite);
 
-    this.markerGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+    this.markerGeometry = new THREE.SphereGeometry(STATION_VIS_RADIUS, 8, 8);
+    this.stationPickGeometry = new THREE.SphereGeometry(
+      STATION_PICK_RADIUS,
+      10,
+      10,
+    );
     this.referenceSats = new THREE.Group();
     this.scene.add(this.referenceSats);
 
@@ -184,6 +200,9 @@ export class BodyView {
 
     // One-time camera-controls hint.
     const hint = document.getElementById("camera-hint");
+    if (hint && window.innerWidth <= 768) {
+      hint.textContent = "Drag to orbit · Pinch to zoom";
+    }
     if (hint && localStorage.getItem("satelliteinc_camera_hint") !== "1") {
       hint.classList.remove("hidden");
       canvas.addEventListener(
@@ -199,6 +218,46 @@ export class BodyView {
 
   setShowTleRefs(show: boolean): void {
     this.showTleRefs = show;
+  }
+
+  /** Preload a body's texture and mesh before the first snapshot. */
+  async preloadBody(bodyId: string): Promise<void> {
+    const style = bodyStyle(bodyId);
+    const urls = [style.textureUrl, style.remoteFallbackUrl].filter(
+      Boolean,
+    ) as string[];
+
+    await new Promise<void>((resolve) => {
+      if (urls.length === 0) {
+        resolve();
+        return;
+      }
+      const loader = new THREE.TextureLoader();
+      let idx = 0;
+      const tryNext = () => {
+        if (idx >= urls.length) {
+          resolve();
+          return;
+        }
+        const url = urls[idx++]!;
+        loader.load(url, () => { resolve(); }, undefined, tryNext);
+      };
+      tryNext();
+    });
+
+    if (this.bodyId === bodyId) return;
+    this.setBody({
+      id: bodyId,
+      name: bodyId,
+      parent_id: null,
+      radius_km: bodyId === "earth" ? 6371 : 1737,
+      rotation_rad_s: 0,
+      position_helio_km: [0, 0, 0],
+      position_parent_km: [0, 0, 0],
+      sun_direction: [1, 0, 0],
+      soi_radius_km: null,
+      texture: bodyId,
+    });
   }
 
   private markerLift(): number {
@@ -223,9 +282,19 @@ export class BodyView {
       this.bodyMesh = null;
     }
     // Station markers belong to the previous body: rebuild from scratch.
-    for (const dot of this.stationDots.values()) {
-      this.stationMarkers.remove(dot);
-      (dot.material as THREE.Material).dispose();
+    for (const group of this.stationDots.values()) {
+      this.stationMarkers.remove(group);
+      for (const child of group.children) {
+        if (!(child instanceof THREE.Mesh)) continue;
+        // Shared geometries (markerGeometry / stationPickGeometry) live on
+        // the view — only dispose per-mesh materials here.
+        const mat = child.material as THREE.Material | THREE.Material[];
+        if (Array.isArray(mat)) {
+          for (const m of mat) m.dispose();
+        } else {
+          mat.dispose();
+        }
+      }
     }
     for (const label of this.stationLabelObjs.values()) {
       this.stationLabels.remove(label);
@@ -244,13 +313,9 @@ export class BodyView {
       shininess: 18,
     });
     const applyTexture = (tex: THREE.Texture) => {
-      // The ECI→render mapping swaps Y/Z (a reflection), so mirror the
-      // equirect texture in longitude to keep geography under the markers.
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.repeat.x = -1;
       mat.map = tex;
       // Texture carries the albedo; drop the flat tint.
-      mat.color.set(0xffffff);
+      mat.color.set(RENDER_COLORS.white);
       mat.needsUpdate = true;
     };
     if (style.textureUrl) {
@@ -298,7 +363,7 @@ export class BodyView {
     return new THREE.Points(
       geo,
       new THREE.PointsMaterial({
-        color: 0xffffff,
+        color: RENDER_COLORS.white,
         size: 0.06,
         transparent: true,
         opacity: 0.7,
@@ -311,10 +376,17 @@ export class BodyView {
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    return this.raycaster.intersectObjects(
+    const hit = this.raycaster.intersectObjects(
       this.stationMarkers.children,
-      false,
+      true,
     )[0]?.object;
+    if (!hit) return undefined;
+    let node: THREE.Object3D | null = hit;
+    while (node) {
+      if (node.userData.stationId) return node;
+      node = node.parent;
+    }
+    return hit;
   }
 
   private onPointerDown(event: PointerEvent): void {
@@ -341,25 +413,38 @@ export class BodyView {
     for (const station of snapshot.ground_stations) {
       // Only stations sitting on the rendered body get surface markers.
       if (station.body_id !== this.bodyId) continue;
-      let dot = this.stationDots.get(station.id);
+      let group = this.stationDots.get(station.id);
       let label = this.stationLabelObjs.get(station.id);
-      if (!dot || !label) {
+      if (!group || !label) {
         const surface = stationLatLonToRender(
           station.latitude_deg,
           station.longitude_deg,
           this.radiusRender,
         );
-        dot = new THREE.Mesh(
+        const anchor = offsetAlongNormal(
+          surface,
+          this.radiusRender,
+          this.markerLift(),
+        );
+        group = new THREE.Group();
+        group.position.copy(anchor);
+        group.userData.stationId = station.id;
+
+        const visual = new THREE.Mesh(
           this.markerGeometry,
           new THREE.MeshBasicMaterial({ depthTest: true, depthWrite: false }),
         );
-        dot.position.copy(
-          offsetAlongNormal(surface, this.radiusRender, this.markerLift()),
+        visual.renderOrder = 2;
+        group.add(visual);
+
+        const pick = new THREE.Mesh(
+          this.stationPickGeometry,
+          new THREE.MeshBasicMaterial({ visible: false }),
         );
-        dot.userData.stationId = station.id;
-        dot.renderOrder = 2;
-        this.stationMarkers.add(dot);
-        this.stationDots.set(station.id, dot);
+        group.add(pick);
+
+        this.stationMarkers.add(group);
+        this.stationDots.set(station.id, group);
 
         const labelDiv = document.createElement("div");
         labelDiv.textContent = station.name;
@@ -370,14 +455,23 @@ export class BodyView {
         this.stationLabels.add(label);
         this.stationLabelObjs.set(station.id, label);
       }
+      // Locked dishes are visible but not selectable (tech gate).
+      group.userData.stationId = station.unlocked ? station.id : undefined;
+      const visual = group.children[0] as THREE.Mesh;
       const inPass = craftStatus.get(station.id)?.in_pass ?? false;
-      (dot.material as THREE.MeshBasicMaterial).color.set(
-        inPass ? 0x3dd68c : 0xff4466,
-      );
-      (label.element as HTMLDivElement).className =
-        `station-label${inPass ? " pass" : ""}`;
-      dot.visible = shouldShowLabel(
-        dot.getWorldPosition(this.worldPos),
+      const color = !station.unlocked
+        ? RENDER_COLORS.muted
+        : inPass
+          ? RENDER_COLORS.success
+          : RENDER_COLORS.stationIdle;
+      (visual.material as THREE.MeshBasicMaterial).color.set(color);
+      const labelEl = label.element as HTMLDivElement;
+      labelEl.textContent = station.unlocked
+        ? station.name
+        : `${station.name} (locked)`;
+      labelEl.className = `station-label${inPass ? " pass" : ""}${station.unlocked ? "" : " locked"}`;
+      group.visible = shouldShowLabel(
+        group.getWorldPosition(this.worldPos),
         this.camera,
       );
       label.visible = shouldShowLabel(
@@ -406,7 +500,7 @@ export class BodyView {
       if (!dot) {
         dot = new THREE.Mesh(
           new THREE.SphereGeometry(0.06, 12, 12),
-          new THREE.MeshBasicMaterial({ color: 0x88ddff }),
+          new THREE.MeshBasicMaterial({ color: RENDER_COLORS.fleetDot }),
         );
         dot.renderOrder = 2;
         this.scene.add(dot);
@@ -437,7 +531,10 @@ export class BodyView {
       if (!entry) {
         const dot = new THREE.Mesh(
           this.markerGeometry,
-          new THREE.MeshBasicMaterial({ color: 0xaa66ff, depthTest: true }),
+          new THREE.MeshBasicMaterial({
+            color: RENDER_COLORS.refSat,
+            depthTest: true,
+          }),
         );
         dot.renderOrder = 2;
         const labelDiv = document.createElement("div");
@@ -539,42 +636,76 @@ export class BodyView {
       occludeRadius: this.radiusRender,
     });
     this.satellite.position.copy(pos);
-    (this.satellite.material as THREE.MeshBasicMaterial).color.set(
-      craft.in_pass ? 0x3dd68c : craft.downlink_active ? 0xff8844 : 0xffdd44,
-    );
+    const satColor = craft.in_pass
+      ? RENDER_COLORS.satellitePass
+      : craft.downlink_active
+        ? RENDER_COLORS.satelliteDownlink
+        : RENDER_COLORS.satellite;
+    setSatelliteColor(this.satellite, satColor);
+
+    if (
+      snapshot.phase === "victory" &&
+      !prefersReducedMotion()
+    ) {
+      const pulse = 1 + 0.12 * Math.sin(performance.now() * 0.004);
+      this.satellite.scale.setScalar(pulse);
+    } else {
+      this.satellite.scale.setScalar(1);
+    }
 
     if (craft.orbit_trail_km.length > 1) {
       // The trail traces the osculating ellipse: rebuild only when the
-      // orbit's shape actually changes, not every frame.
+      // orbit's shape actually changes, not every frame. RAAN/argp are
+      // coarsened to 0.1° — J2 drifts them continuously and finer keys
+      // would rebuild the trail every tick at high time accel.
       const el = craft.elements;
       const trailKey = el
-        ? `${this.bodyId}|${el.semi_major_axis_km.toFixed(2)}|${el.eccentricity.toFixed(6)}|${el.inclination_deg.toFixed(3)}|${el.raan_deg.toFixed(3)}|${el.arg_perigee_deg.toFixed(3)}`
+        ? `${this.bodyId}|${el.semi_major_axis_km.toFixed(2)}|${el.eccentricity.toFixed(6)}|${el.inclination_deg.toFixed(3)}|${el.raan_deg.toFixed(1)}|${el.arg_perigee_deg.toFixed(1)}|${craft.pending_hohmann ? "xfer" : "nom"}`
         : String(craft.orbit_trail_km.length);
       if (trailKey !== this.orbitTrailKey) {
         this.orbitTrailKey = trailKey;
         const points = craft.orbit_trail_km.map((p) => eciKmToRender(p));
-        this.orbitLine.geometry.dispose();
-        this.orbitLine.geometry = new THREE.BufferGeometry().setFromPoints(
-          points,
+        const trailRgb = new THREE.Color(
+          craft.pending_hohmann
+            ? RENDER_COLORS.transfer
+            : RENDER_COLORS.accent,
         );
+        this.orbitLine.geometry.dispose();
+        this.orbitLine.geometry = orbitTrailGeometry(points, trailRgb);
       }
       (this.orbitLine.material as THREE.LineBasicMaterial).color.set(
-        craft.pending_hohmann ? 0xff8844 : 0x4da3ff,
+        RENDER_COLORS.white,
       );
       this.orbitLine.visible = true;
     }
 
-    if (craft.downlink_active && craft.in_pass && craft.downlink_station_id) {
-      const stationDot = this.stationDots.get(craft.downlink_station_id);
-      if (stationDot) {
-        const stPos = stationDot.getWorldPosition(this.worldPos);
+    // Downlink beam: local dish → station marker; DSN deep-space → short
+    // radial beam (Earth stations aren't on this body's surface).
+    if (craft.downlink_active && craft.downlink_station_id) {
+      const stLink = craft.station_status.find(
+        (st) => st.station_id === craft.downlink_station_id,
+      );
+      const linkLive = stLink?.in_pass ?? craft.in_pass;
+      if (linkLive) {
+        const stationDot = this.stationDots.get(craft.downlink_station_id);
         const attr = this.downlinkLine.geometry.getAttribute(
           "position",
         ) as THREE.BufferAttribute;
-        attr.setXYZ(0, pos.x, pos.y, pos.z);
-        attr.setXYZ(1, stPos.x, stPos.y, stPos.z);
-        attr.needsUpdate = true;
-        this.downlinkLine.visible = true;
+        if (stationDot) {
+          const stPos = stationDot.getWorldPosition(this.worldPos);
+          attr.setXYZ(0, pos.x, pos.y, pos.z);
+          attr.setXYZ(1, stPos.x, stPos.y, stPos.z);
+          attr.needsUpdate = true;
+          this.downlinkLine.visible = true;
+        } else {
+          // Deep-space / off-body dish: beam outward along craft radius.
+          const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
+          const scale = 1 + (this.radiusRender * 0.35) / len;
+          attr.setXYZ(0, pos.x, pos.y, pos.z);
+          attr.setXYZ(1, pos.x * scale, pos.y * scale, pos.z * scale);
+          attr.needsUpdate = true;
+          this.downlinkLine.visible = true;
+        }
       }
     }
 

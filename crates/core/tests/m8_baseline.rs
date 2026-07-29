@@ -74,20 +74,20 @@ fn campaign_slice_is_bit_identical() {
     check("sim_seconds", snap.sim_seconds, 0x40e7700000000000);
     check("cash_usd", snap.cash_usd, 0x4113f8d8e38dec80);
     check("reputation", snap.reputation, 0x4034000000000000);
-    check("pos_x", craft.position_eci_km[0], 0xc0ba4fd72e31487d);
-    check("pos_y", craft.position_eci_km[1], 0x40853086d443fc51);
-    check("pos_z", craft.position_eci_km[2], 0x409259c724ccf28b);
-    // Re-captured at M10: the sun now moves with the ephemerides, so eclipse
-    // boundaries (and thus battery state) shifted deliberately. Every other
-    // literal survived the change bit-exact.
-    check("power_wh", craft.power_wh, 0x403305e58335617a);
-    check("buffer_mb", craft.buffer_mb, 0x40a0000000000000);
+    check("pos_x", craft.position_eci_km[0], 0xc0ba3f785ede2e6c);
+    check("pos_y", craft.position_eci_km[1], 0x408c0753d5756dcf);
+    check("pos_z", craft.position_eci_km[2], 0x409180e5f3b6dcc9);
+    // Re-captured at M10 (moving sun), M17 (realism pass), and FDIR pass:
+    // inverse-square solar, J2, per-bus buffer/imaging, then sticky-fault
+    // durations / eclipse MTBF nudge power_wh only. Economy bits unchanged.
+    check("power_wh", craft.power_wh, 0x403308793dd97e6e);
+    check("buffer_mb", craft.buffer_mb, 0x4080000000000000);
     check(
         "contract_progress",
         snap.active_contracts
             .first()
             .map_or(-1.0, |c| c.contract.downlink_mb_done),
-        0x405c400000000000,
+        0x405c500000000000,
     );
 }
 

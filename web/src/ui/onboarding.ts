@@ -1,9 +1,11 @@
+import { releaseFocus, trapFocus } from "./focus-trap.ts";
+
 const STORAGE_KEY = "satelliteinc_onboarding_done";
 
 const STEPS = [
   {
     title: "Welcome to Satellite Inc",
-    body: "Build a space company: design satellites, launch to orbit, and fulfill imaging contracts. Complete all five contracts to win the campaign.",
+    body: "One career, one agency: grow from an Earth imaging startup into an interplanetary operator. Design, launch, downlink — then unlock the Moon, Mars, Venus, and Jupiter through Programs.",
   },
   {
     title: "Design & contract",
@@ -19,15 +21,15 @@ const STEPS = [
   },
   {
     title: "Watch your burn rate",
-    body: "Operating costs money every sim-day — idling drains cash. If cash falls below −$50k, you're bankrupt. Keep a contract in the pipeline.",
+    body: "Operating costs money every sim-day — idling drains cash. If cash falls below −$50k, you're bankrupt. Keep a contract in the pipeline. Rivals and space weather grow harsher as you complete programs.",
   },
   {
     title: "Maneuver",
     body: "Use the Orbit tab to change altitude with a Hohmann transfer: burn 1 at one apsis, coast, burn 2 at the other. The HUD counts down to the next apsis.",
   },
   {
-    title: "Handle anomalies",
-    body: "Anomalies drain extra power until handled. Queue Clear anomaly, Reboot comms, or Safe mode at a station — they execute at the next pass.",
+    title: "Handle anomalies (FDIR)",
+    body: "Faults are procedure-specific: EPS clear for power glitches, reboot for comms dropouts, safe mode to shed load. SEU buffer hits cost data immediately. Commands uplink at the next pass (plus light-time beyond Earth).",
   },
   {
     title: "Redesign when needed",
@@ -42,8 +44,8 @@ const STEPS = [
     body: "During the cruise the craft hibernates at 10% ops cost. Propellant for the capture burn is reserved before departure, so check the Δv budget first. Warp to arrival — capture is automatic.",
   },
   {
-    title: "Grow and win",
-    body: "Earn cash and reputation, invest in R&D, unlock buses. Complete every contract at least once to win. Press ? anytime to reopen this guide.",
+    title: "Career path & victory",
+    body: "Programs are the chapters of one career: finish a body's contracts, buy into the next program, push to Europa. Complete every program for grand victory. Sandbox Lab is a separate free-play mode. Press ? anytime for this guide.",
   },
 ];
 
@@ -51,6 +53,7 @@ export class Onboarding {
   private step = 0;
   private single: { title: string; body: string } | null = null;
   private readonly root: HTMLElement;
+  private untrap: (() => void) | null = null;
 
   constructor() {
     this.root = document.getElementById("onboarding")!;
@@ -80,25 +83,38 @@ export class Onboarding {
     this.single = null;
     this.step = 0;
     this.render();
-    this.root.classList.remove("hidden");
+    this.open();
   }
 
   /** One contextual card (first-time triggers), outside the deck flow. */
   showSingle(title: string, body: string): void {
     this.single = { title, body };
     this.render();
+    this.open();
+  }
+
+  private open(): void {
     this.root.classList.remove("hidden");
+    this.untrap?.();
+    this.untrap = trapFocus(this.root);
+  }
+
+  private close(): void {
+    this.root.classList.add("hidden");
+    this.untrap?.();
+    this.untrap = null;
+    releaseFocus();
   }
 
   private dismiss(): void {
     localStorage.setItem(STORAGE_KEY, "1");
-    this.root.classList.add("hidden");
+    this.close();
   }
 
   private next(): void {
     if (this.single) {
       this.single = null;
-      this.root.classList.add("hidden");
+      this.close();
       return;
     }
     if (this.step >= STEPS.length - 1) {
@@ -107,12 +123,14 @@ export class Onboarding {
     }
     this.step += 1;
     this.render();
+    this.root.querySelector<HTMLButtonElement>("#onboarding-next")?.focus();
   }
 
   private back(): void {
     if (this.step <= 0) return;
     this.step -= 1;
     this.render();
+    this.root.querySelector<HTMLButtonElement>("#onboarding-next")?.focus();
   }
 
   private render(): void {
@@ -122,6 +140,7 @@ export class Onboarding {
       this.root.querySelector("#onboarding-body")!.textContent =
         this.single.body;
       this.root.querySelector("#onboarding-progress")!.textContent = "";
+      this.root.querySelector<HTMLElement>("#onboarding-shortcuts")?.remove();
       const backBtn = this.root.querySelector<HTMLButtonElement>(
         "#onboarding-back",
       )!;
@@ -147,5 +166,22 @@ export class Onboarding {
     backBtn.disabled = this.step === 0;
     nextBtn.textContent =
       this.step >= STEPS.length - 1 ? "Start playing" : "Next";
+
+    let shortcutsEl = this.root.querySelector<HTMLElement>(
+      "#onboarding-shortcuts",
+    );
+    if (!shortcutsEl) {
+      shortcutsEl = document.createElement("p");
+      shortcutsEl.id = "onboarding-shortcuts";
+      shortcutsEl.className = "hint";
+      body.insertAdjacentElement("afterend", shortcutsEl);
+    }
+    if (this.step >= STEPS.length - 1) {
+      shortcutsEl.textContent =
+        "Shortcuts: Space pause/resume · +/− speed · 1–5 tabs · D downlink · M map · ? help";
+      shortcutsEl.hidden = false;
+    } else {
+      shortcutsEl.hidden = true;
+    }
   }
 }

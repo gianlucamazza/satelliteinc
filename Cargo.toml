@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.96"
 license = "MIT"
 authors = ["Gianluca Mazza"]
-repository = "https://github.com/gianlucatruda/satelliteinc"
+repository = "https://github.com/gianlucamazza/satelliteinc"
 
 [workspace.dependencies]
 satelliteinc-core = { path = "crates/core" }

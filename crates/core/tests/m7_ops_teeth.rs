@@ -92,6 +92,89 @@ fn safe_mode_command_halves_anomaly_duration() {
 }
 
 #[test]
+fn eps_clear_only_clears_power_glitch() {
+    let mut sim = SimState::new(load_content()).unwrap();
+    sim.apply_action(PlayerAction::SelectBus {
+        bus_id: "cubesat".into(),
+    })
+    .unwrap();
+    sim.apply_action(PlayerAction::SetOrbit {
+        craft_id: 0,
+        altitude_km: 400.0,
+        inclination_deg: 97.0,
+    })
+    .unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
+    let now = sim.clock.sim_seconds;
+    common::only_craft_mut(&mut sim).active_anomaly =
+        Some(ActiveAnomaly::new(AnomalyType::CommsDropout, now));
+    common::only_craft_mut(&mut sim)
+        .active_anomaly
+        .as_mut()
+        .unwrap()
+        .duration_seconds = 1_000_000.0;
+
+    sim.apply_action(PlayerAction::QueueCommand {
+        craft_id: 0,
+        command: CommandType::ClearAnomaly,
+        station_id: "svalbard".into(),
+    })
+    .unwrap();
+    sim.apply_action(PlayerAction::SetTimeAccel { multiplier: 500.0 })
+        .unwrap();
+    for _ in 0..3_000 {
+        sim.step(0.016);
+        if common::only_craft(&sim)
+            .command_queue
+            .is_empty()
+        {
+            break;
+        }
+    }
+    assert!(
+        common::only_craft(&sim).active_anomaly.is_some(),
+        "EPS clear must not clear a comms dropout"
+    );
+
+    // Correct procedure: reboot.
+    sim.apply_action(PlayerAction::QueueCommand {
+        craft_id: 0,
+        command: CommandType::RebootComms,
+        station_id: "svalbard".into(),
+    })
+    .unwrap();
+    for _ in 0..3_000 {
+        sim.step(0.016);
+        if common::only_craft(&sim).active_anomaly.is_none() {
+            break;
+        }
+    }
+    assert!(
+        common::only_craft(&sim).active_anomaly.is_none(),
+        "reboot must clear comms dropout"
+    );
+}
+
+#[test]
+fn buffer_seu_is_instant_not_sticky() {
+    let mut sim = SimState::new(load_content()).unwrap();
+    sim.apply_action(PlayerAction::SelectBus {
+        bus_id: "cubesat".into(),
+    })
+    .unwrap();
+    sim.apply_action(PlayerAction::Launch { craft_id: 0 })
+        .unwrap();
+    let craft = common::only_craft_mut(&mut sim);
+    craft.buffer_mb = 100.0;
+    craft.anomaly_cooldown_until = 0.0;
+    // Inject as the sim would for a SEU event.
+    craft.buffer_mb *= 0.75;
+    assert!(craft.active_anomaly.is_none());
+    assert!((craft.buffer_mb - 75.0).abs() < 1e-9);
+}
+
+#[test]
 fn redundancy_tech_stretches_anomaly_period() {
     // Base period 4000 s: boundary at 4000 fires with mtbf 1.0...
     assert!(roll_anomaly(4_000.5, 1.0, 0.0, 1.0, 0.0).is_some());

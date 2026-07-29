@@ -2,6 +2,14 @@ use crate::action::PlayerAction;
 use crate::body::{BodyRegistry, CelestialBody};
 use crate::clock::SimClock;
 use crate::company::{ActiveContract, GameMode, GameOutcome, can_purchase_tech};
+use crate::market::{
+    self, CompetitorSnapshot, MarketState, claim_cooldown_seconds,
+    contest_duration_seconds, market_enabled_for,
+};
+use crate::prestige;
+use crate::weather::{
+    self, ActiveWorldEvent, WeatherState, WorldEventSnapshot, pick_event,
+};
 use crate::constants::SECONDS_PER_DAY;
 use crate::content::GameContent;
 use crate::error::SimError;
@@ -11,7 +19,7 @@ use crate::maneuver_ops::{
 };
 use crate::ops::{
     ANOMALY_COOLDOWN_SECONDS, ActiveAnomaly, AnomalyType, CommandType, QueuedCommand,
-    execute_command, roll_anomaly,
+    execute_command,
 };
 use crate::ops::{GroundStation, eci_to_ecef_km, in_sunlight, is_in_pass};
 use crate::orbit::{
@@ -62,6 +70,10 @@ pub struct SimState {
     pub pass_active: Vec<Vec<bool>>,
     /// Per-tick cache for SGP4 reference-satellite states (snapshot runs per frame).
     pub(crate) ref_sat_cache: std::cell::RefCell<Option<(u64, Vec<ReferenceSatellite>)>>,
+    /// Rival firms contesting the marketplace (M19).
+    pub market: MarketState,
+    /// Global space weather / campaign pressure (M20).
+    pub weather: WeatherState,
 }
 
 impl SimState {
@@ -80,14 +92,25 @@ impl SimState {
             .iter()
             .filter_map(|e| TlePropagator::from_entry(e).ok())
             .collect();
+        let company = crate::company::CompanyState::new(
+            "Satellite Inc",
+            STARTING_CASH,
+            GameMode::Campaign,
+            &content,
+        );
+        let market = MarketState::from_content(
+            &content,
+            market_enabled_for(company.game_mode, None),
+            0.0,
+        );
+        let weather = WeatherState::from_content(
+            &content,
+            WeatherState::weather_enabled_for(company.game_mode, None),
+            0.0,
+        );
         Ok(Self {
             clock: SimClock::new(),
-            company: crate::company::CompanyState::new(
-                "Satellite Inc",
-                STARTING_CASH,
-                GameMode::Campaign,
-                &content,
-            ),
+            company,
             fleet: Vec::new(),
             next_craft_id: 0,
             bodies,
@@ -97,6 +120,8 @@ impl SimState {
             event_queue: Vec::new(),
             tle_propagators,
             ref_sat_cache: std::cell::RefCell::new(None),
+            market,
+            weather,
         })
     }
 
@@ -201,24 +226,73 @@ impl SimState {
             .find(|c| c.assigned_craft_id == Some(craft_id))
     }
 
-    /// Whether a station can serve a craft at the given body: local dishes
-    /// on the same body, or Earth DSN dishes for any craft beyond Earth.
-    fn station_reachable(station: &GroundStation, craft_body_id: &str) -> bool {
+    /// Campaign (and free in sandbox): whether the company has unlocked this dish.
+    fn station_available(&self, station: &GroundStation) -> bool {
+        match &station.requires_tech {
+            None => true,
+            Some(_) if self.company.game_mode == GameMode::Sandbox => true,
+            Some(tech) => self.company.unlocked_tech.contains(tech),
+        }
+    }
+
+    /// Whether a station can serve a craft at the given body: unlocked local
+    /// dishes on the same body, or Earth DSN dishes for any craft beyond Earth.
+    fn station_reachable(&self, station: &GroundStation, craft_body_id: &str) -> bool {
+        if !self.station_available(station) {
+            return false;
+        }
         station.body_id == craft_body_id || (station.dsn && craft_body_id != "earth")
+    }
+
+    /// Best default downlink dish for a craft at `craft_body_id`.
+    /// Order: highest-bw **local non-DSN** → other local → best DSN.
+    /// Never picks an unreachable station (unlike a naive `stations[0]`).
+    fn preferred_downlink_station(&self, craft_body_id: &str) -> Option<String> {
+        let reachable: Vec<&GroundStation> = self
+            .ground_stations
+            .iter()
+            .filter(|st| self.station_reachable(st, craft_body_id))
+            .collect();
+        if reachable.is_empty() {
+            return None;
+        }
+        let pick = |pred: &dyn Fn(&&GroundStation) -> bool| {
+            reachable
+                .iter()
+                .copied()
+                .filter(pred)
+                .max_by(|a, b| {
+                    a.bandwidth_mbps
+                        .partial_cmp(&b.bandwidth_mbps)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|st| st.id.clone())
+        };
+        // Commercial / body-local ops dishes first (not DSN complexes).
+        pick(&|st| st.body_id == craft_body_id && !st.dsn)
+            .or_else(|| pick(&|st| st.body_id == craft_body_id))
+            .or_else(|| pick(&|_| true))
     }
 
     /// Link bandwidth for a station serving a craft at `body`: full for a
     /// local dish, scaled by the body's DSN factor over a deep-space link.
+    /// World-event bandwidth multipliers apply when the event hits this body
+    /// (and DSN-only events only scale deep-space links).
     fn station_bandwidth_for(
+        &self,
         station: &GroundStation,
         body: &CelestialBody,
         deep_space_comms_multiplier: f64,
     ) -> f64 {
-        if station.body_id == body.id {
+        let base = if station.body_id == body.id {
             station.bandwidth_mbps
         } else {
             station.bandwidth_mbps * body.dsn_bandwidth_factor * deep_space_comms_multiplier
-        }
+        };
+        let wx = self
+            .weather
+            .modifiers(&self.content, &body.id, station.dsn);
+        base * wx.bandwidth_multiplier
     }
 
     /// Unit vector from the craft's body toward Earth at `sim_seconds`.
@@ -395,12 +469,7 @@ impl SimState {
         craft.total_delta_v_used_km_s += transfer.capture_dv_km_s;
         craft.transfer_target = None;
         let target_id = target.id.clone();
-        let default_station = self
-            .ground_stations
-            .iter()
-            .find(|st| Self::station_reachable(st, &target_id))
-            .map(|st| st.id.clone());
-        self.fleet[idx].downlink_station_id = default_station;
+        self.fleet[idx].downlink_station_id = self.preferred_downlink_station(&target_id);
         self.pass_active[idx].fill(false);
         self.push_event(SimEvent::TransferArrived {
             craft_id,
@@ -512,62 +581,47 @@ impl SimState {
                 contract_id,
                 assigned_craft_id,
             } => {
-                if self.company.active_contracts.len() >= self.max_active_contracts() {
-                    return Err(SimError::InvalidAction("contract slots full".into()));
-                }
-                if self.company.contract_by_template(&contract_id).is_some() {
-                    return Err(SimError::InvalidAction("contract already active".into()));
-                }
-                if let Some(craft_id) = assigned_craft_id {
-                    self.craft(craft_id)?;
-                    if self.contract_assigned_to(craft_id).is_some() {
-                        return Err(SimError::InvalidAction(
-                            "craft already has an assigned contract".into(),
-                        ));
-                    }
-                }
+                self.accept_contract_inner(&contract_id, assigned_craft_id)?;
+            }
+            PlayerAction::RushBid {
+                contract_id,
+                assigned_craft_id,
+            } => {
+                let contest = self
+                    .market
+                    .contest_for(&contract_id)
+                    .ok_or_else(|| {
+                        SimError::InvalidAction(
+                            "rush bid requires an active contest on that contract".into(),
+                        )
+                    })?
+                    .clone();
                 let offer = self
-                    .company
-                    .marketplace(&self.content)
+                    .decorated_marketplace()
                     .into_iter()
                     .find(|o| o.template_id == contract_id)
                     .ok_or_else(|| SimError::Content(format!("unknown contract: {contract_id}")))?;
-                if !offer.available {
+                let premium = offer.rush_bid_premium_usd;
+                if premium <= 0.0 {
                     return Err(SimError::InvalidAction(
-                        "contract not available (reputation or already completed)".into(),
+                        "rush bid not available on this offer".into(),
                     ));
                 }
-                let template = self
-                    .content
-                    .contract(&contract_id)
-                    .ok_or_else(|| SimError::Content(format!("unknown contract: {contract_id}")))?
-                    .clone();
-                let completions = if self.company.game_mode == GameMode::Campaign {
-                    self.company.completions_of(&contract_id)
-                } else {
-                    0
-                };
-                let mut contract =
-                    ActiveContract::from_template(&template, self.clock.sim_seconds, completions);
-                // Interplanetary mobilization advance: cash up front, clawed
-                // back with interest in reputation on failure.
-                if completions == 0 && template.advance_fraction > 0.0 {
-                    let advance = contract.payout_usd * template.advance_fraction;
-                    contract.advance_paid_usd = advance;
-                    self.company.cash_usd += advance;
+                if !self.company.can_afford(premium) {
+                    self.push_event(SimEvent::InsufficientFunds {
+                        required_usd: premium,
+                    });
+                    return Err(SimError::InsufficientFunds(premium));
                 }
-                contract.assigned_craft_id = assigned_craft_id;
-                let advance = contract.advance_paid_usd;
-                self.company.active_contracts.push(contract);
-                self.push_event(SimEvent::ActionApplied {
-                    message: if advance > 0.0 {
-                        format!(
-                            "Accepted contract: {} (+${:.0} advance)",
-                            template.name, advance
-                        )
-                    } else {
-                        format!("Accepted contract: {}", template.name)
-                    },
+                self.company.cash_usd -= premium;
+                if let Err(e) = self.accept_contract_inner(&contract_id, assigned_craft_id) {
+                    self.company.cash_usd += premium;
+                    return Err(e);
+                }
+                self.push_event(SimEvent::RushBidWon {
+                    contract_id: contract_id.clone(),
+                    premium_usd: premium,
+                    competitor_id: contest.competitor_id,
                 });
             }
             PlayerAction::Launch { craft_id } => {
@@ -595,7 +649,8 @@ impl SimState {
                     inc,
                     self.clock.sim_seconds,
                 );
-                let default_station = self.ground_stations.first().map(|s| s.id.clone());
+                let body_id = self.craft_body_of(self.craft(craft_id)?).id.clone();
+                let default_station = self.preferred_downlink_station(&body_id);
                 self.company.cash_usd -= cost;
                 let now = self.clock.sim_seconds;
                 let craft = self.craft_in_phase_mut(craft_id, CraftPhase::Design)?;
@@ -605,9 +660,9 @@ impl SimState {
                 if craft.launched_at_sim_seconds.is_none() {
                     craft.launched_at_sim_seconds = Some(now);
                 }
-                if craft.downlink_station_id.is_none() {
-                    craft.downlink_station_id = default_station;
-                }
+                // Always re-bind to a *reachable* dish for this body (design may
+                // still hold a stale sandbox/other-body station id).
+                craft.downlink_station_id = default_station.or(craft.downlink_station_id.clone());
                 let craft_name = craft.name.clone();
                 self.push_event(SimEvent::Launched {
                     craft_id,
@@ -675,6 +730,54 @@ impl SimState {
                 let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
                 craft.maneuver_target_altitude_km = target_altitude_km.clamp(min_park, max_park);
             }
+            PlayerAction::PlaneChangeBurn {
+                craft_id,
+                delta_inclination_deg,
+            } => {
+                let isp_mult = self.company.isp_multiplier;
+                let body = self.craft_body_of(self.craft(craft_id)?).clone();
+                let now = self.clock.sim_seconds;
+                let craft = self.craft_in_phase_mut(craft_id, CraftPhase::OnOrbit)?;
+                let elements = craft
+                    .elements
+                    .ok_or_else(|| SimError::InvalidAction("no orbit".into()))?;
+                let delta = delta_inclination_deg.clamp(-98.0, 98.0);
+                if delta.abs() < 0.1 {
+                    return Err(SimError::InvalidAction(
+                        "plane change too small to plan".into(),
+                    ));
+                }
+                let new_inclination = (elements.inclination_deg + delta).clamp(0.0, 98.0);
+                let actual_delta = new_inclination - elements.inclination_deg;
+                if actual_delta.abs() < 0.1 {
+                    return Err(SimError::InvalidAction(
+                        "already at the inclination limit".into(),
+                    ));
+                }
+                let pos = eci_position_km(body.mu_km3_s2, &elements, now);
+                let vel = eci_velocity_km_s(body.mu_km3_s2, &elements, now);
+                // Plane changes happen where the planes intersect: the node.
+                let r_mag = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+                if pos[2].abs() > 0.02 * r_mag {
+                    return Err(SimError::InvalidAction(
+                        "plane change requires the ascending/descending node".into(),
+                    ));
+                }
+                let v_mag = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+                let dv = 2.0 * v_mag * (actual_delta.to_radians().abs() / 2.0).sin();
+                let prop_used = crate::maneuver_ops::spend_propellant(craft, dv, isp_mult)?;
+                if let Some(el) = craft.elements.as_mut() {
+                    el.inclination_deg = new_inclination;
+                }
+                craft.total_delta_v_used_km_s += dv;
+                self.push_event(SimEvent::ManeuverExecuted {
+                    craft_id,
+                    delta_v_km_s: dv,
+                    propellant_used_kg: prop_used,
+                    new_altitude_km: None,
+                    label: format!("plane change {actual_delta:+.1}°"),
+                });
+            }
             PlayerAction::StartHohmann { craft_id } => {
                 let isp_mult = self.company.isp_multiplier;
                 let body = self.craft_body_of(self.craft(craft_id)?).clone();
@@ -731,7 +834,7 @@ impl SimState {
                     .iter()
                     .find(|s| s.id == station_id)
                     .ok_or_else(|| SimError::Content(format!("unknown station: {station_id}")))?;
-                if !Self::station_reachable(station, &craft_body_id) {
+                if !self.station_reachable(station, &craft_body_id) {
                     return Err(SimError::InvalidAction(format!(
                         "station {station_id} cannot serve a craft at {craft_body_id}"
                     )));
@@ -750,7 +853,7 @@ impl SimState {
                     .iter()
                     .find(|s| s.id == station_id)
                     .ok_or_else(|| SimError::Content(format!("unknown station: {station_id}")))?;
-                if !Self::station_reachable(station, &craft_body_id) {
+                if !self.station_reachable(station, &craft_body_id) {
                     return Err(SimError::InvalidAction(format!(
                         "station {station_id} cannot serve a craft at {craft_body_id}"
                     )));
@@ -784,6 +887,19 @@ impl SimState {
                     _ => GameMode::Sandbox,
                 };
                 self.company.on_mode_changed(&self.content);
+                let enabled = market_enabled_for(self.company.game_mode, None);
+                self.market = MarketState::from_content(
+                    &self.content,
+                    enabled,
+                    self.clock.sim_seconds,
+                );
+                let weather_on =
+                    WeatherState::weather_enabled_for(self.company.game_mode, None);
+                self.weather = WeatherState::from_content(
+                    &self.content,
+                    weather_on,
+                    self.clock.sim_seconds,
+                );
                 self.push_event(SimEvent::ActionApplied {
                     message: format!("Game mode: {:?}", self.company.game_mode),
                 });
@@ -989,6 +1105,8 @@ impl SimState {
         for idx in 0..self.fleet.len() {
             self.tick_craft(idx, dt);
         }
+        self.tick_market();
+        self.tick_weather();
         self.check_contracts();
     }
 
@@ -1050,14 +1168,21 @@ impl SimState {
         };
 
         let comms_mult = self.company.comms_multiplier;
-        let solar_mult = self.company.solar_multiplier;
+        // Panels obey the inverse-square law: tech multiplier x real flux,
+        // further derated by active world events (M20).
+        let wx = self.weather.craft_modifiers(&self.content, &craft_body_id);
+        let solar_mult = self.company.solar_multiplier
+            * self.bodies.solar_flux_at(body_idx, sim_seconds)
+            * wx.solar_penalty;
 
         let mut pass_events = Vec::new();
         let mut station_passes = vec![false; self.ground_stations.len()];
 
         let mut pass_starts: Vec<(String, String)> = Vec::new();
         for (i, station) in self.ground_stations.iter().enumerate() {
-            let in_pass = if station.body_id == craft_body_id {
+            let in_pass = if !self.station_available(station) {
+                false
+            } else if station.body_id == craft_body_id {
                 is_in_pass(
                     radius,
                     station.latitude_deg,
@@ -1065,7 +1190,7 @@ impl SimState {
                     station.min_elevation_deg,
                     ecef,
                 )
-            } else if station.dsn {
+            } else if station.dsn && craft_body_id != "earth" {
                 earth_los
             } else {
                 false
@@ -1095,7 +1220,9 @@ impl SimState {
         {
             let flavor = self.bodies.body(body_idx).anomaly_flavor.clone();
             let body_rate = self.bodies.body(body_idx).anomaly_rate_multiplier;
+            let body_id_str = craft_body_id.clone();
             let craft = &mut self.fleet[idx];
+            // Natural recovery of sticky faults (SEU power/comms that self-heal).
             if let Some(a) = craft.active_anomaly.clone()
                 && a.is_expired(sim_seconds)
             {
@@ -1106,42 +1233,86 @@ impl SimState {
                 craft.active_anomaly = None;
                 craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
             }
-            if craft.active_anomaly.is_none()
-                && let Some(kind) = roll_anomaly(
+            // Critical EPS: unmanaged power glitch + low battery → auto-safe
+            // (real FDIR; not player-optional arcade damage).
+            if let Some(a) = &craft.active_anomaly
+                && a.kind == AnomalyType::PowerGlitch
+                && !craft.in_safe_mode(sim_seconds)
+                && craft.power_wh < craft.bus.battery_wh * 0.12
+            {
+                if craft.payload_mode != PayloadMode::Safe {
+                    craft.payload_mode_before_safe = Some(craft.payload_mode);
+                }
+                craft.safe_mode_until = sim_seconds + 300.0;
+                craft.payload_mode = PayloadMode::Safe;
+                if let Some(a) = craft.active_anomaly.as_mut() {
+                    let elapsed = sim_seconds - a.started_at_sim_seconds;
+                    let remaining = (a.duration_seconds - elapsed).max(0.0);
+                    a.duration_seconds = elapsed + remaining * 0.5;
+                }
+            }
+            if craft.active_anomaly.is_none() {
+                // Eclipse thermal cycling slightly raises failure pressure.
+                let eclipse_mtbf = if sunlight { 1.0 } else { 0.88 };
+                let mtbf = self.company.anomaly_mtbf_multiplier
+                    / body_rate
+                    / wx.anomaly_rate_multiplier.max(0.01)
+                    * eclipse_mtbf;
+                let weights = crate::ops::AnomalyWeights::from_body_id(&body_id_str);
+                if let Some(kind) = crate::ops::roll_anomaly_weighted(
                     sim_seconds,
                     dt,
                     craft.anomaly_cooldown_until,
-                    self.company.anomaly_mtbf_multiplier / body_rate,
+                    mtbf,
                     f64::from(craft_id) * crate::ops::ANOMALY_PHASE_STRIDE_SECONDS,
-                )
-            {
-                let mut anomaly = ActiveAnomaly::new(kind, sim_seconds);
-                if let Some(flavor) = &flavor {
-                    anomaly.label_override = match kind {
-                        AnomalyType::PowerGlitch => flavor.power_glitch_label.clone(),
-                        AnomalyType::CommsDropout => flavor.comms_dropout_label.clone(),
-                        AnomalyType::BufferCorruption => flavor.buffer_corruption_label.clone(),
-                    };
-                    if kind == AnomalyType::CommsDropout
-                        && let Some(duration) = flavor.comms_dropout_duration_s
-                    {
-                        anomaly.duration_seconds = duration;
+                    weights,
+                ) {
+                    let mut anomaly = ActiveAnomaly::new(kind, sim_seconds);
+                    if let Some(flavor) = &flavor {
+                        anomaly.label_override = match kind {
+                            AnomalyType::PowerGlitch => flavor.power_glitch_label.clone(),
+                            AnomalyType::CommsDropout => flavor.comms_dropout_label.clone(),
+                            AnomalyType::BufferCorruption => {
+                                flavor.buffer_corruption_label.clone()
+                            }
+                        };
+                        if kind == AnomalyType::CommsDropout
+                            && let Some(duration) = flavor.comms_dropout_duration_s
+                        {
+                            anomaly.duration_seconds = duration;
+                        }
+                    }
+                    let label = anomaly.label().to_string();
+                    // SEU / buffer hit: one-shot data loss, no sticky fault.
+                    if kind == AnomalyType::BufferCorruption {
+                        let fraction = flavor
+                            .as_ref()
+                            .map_or(0.25, |f| f.buffer_corruption_fraction)
+                            .clamp(0.05, 0.9);
+                        craft.buffer_mb *= 1.0 - fraction;
+                        craft.anomaly_cooldown_until =
+                            sim_seconds + ANOMALY_COOLDOWN_SECONDS;
+                        anomaly_events.push(SimEvent::AnomalyStarted {
+                            craft_id,
+                            kind,
+                            label,
+                        });
+                        // Immediately "cleared" as an event-class fault.
+                        anomaly_events.push(SimEvent::AnomalyCleared {
+                            craft_id,
+                            kind: AnomalyType::BufferCorruption,
+                        });
+                    } else {
+                        craft.active_anomaly = Some(anomaly);
+                        craft.anomaly_cooldown_until =
+                            sim_seconds + ANOMALY_COOLDOWN_SECONDS;
+                        anomaly_events.push(SimEvent::AnomalyStarted {
+                            craft_id,
+                            kind,
+                            label,
+                        });
                     }
                 }
-                let label = anomaly.label().to_string();
-                if kind == AnomalyType::BufferCorruption {
-                    let fraction = flavor
-                        .as_ref()
-                        .map_or(0.25, |f| f.buffer_corruption_fraction);
-                    craft.buffer_mb *= 1.0 - fraction;
-                }
-                craft.active_anomaly = Some(anomaly);
-                craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
-                anomaly_events.push(SimEvent::AnomalyStarted {
-                    craft_id,
-                    kind,
-                    label,
-                });
             }
         }
 
@@ -1152,8 +1323,23 @@ impl SimState {
             .as_ref()
             .map_or(1.0, |f| f.solar_penalty_while_active);
         let deep_space_mult = self.company.deep_space_comms_multiplier;
-        let body_dsn_factor = self.bodies.body(body_idx).dsn_bandwidth_factor;
-        let _ = body_dsn_factor;
+        let body = self.bodies.body(body_idx);
+        // Resolve downlink bandwidth before mutably borrowing the craft.
+        let downlink_station_id = self.fleet[idx].downlink_station_id.clone();
+        let station_bandwidth = downlink_station_id
+            .as_ref()
+            .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
+            .map(|s| self.station_bandwidth_for(s, body, deep_space_mult));
+        let downlink_pass = downlink_station_id
+            .as_ref()
+            .and_then(|id| {
+                self.ground_stations
+                    .iter()
+                    .position(|s| &s.id == id)
+                    .map(|i| station_passes[i])
+            })
+            .unwrap_or_else(|| station_passes.iter().any(|&p| p));
+
         let craft = &mut self.fleet[idx];
 
         if craft.safe_mode_until > 0.0 && sim_seconds >= craft.safe_mode_until {
@@ -1164,17 +1350,6 @@ impl SimState {
                 craft.payload_mode = mode;
             }
         }
-
-        let downlink_pass = craft
-            .downlink_station_id
-            .as_ref()
-            .and_then(|id| {
-                self.ground_stations
-                    .iter()
-                    .position(|s| &s.id == id)
-                    .map(|i| station_passes[i])
-            })
-            .unwrap_or_else(|| station_passes.iter().any(|&p| p));
 
         let balance =
             craft.power_balance_w(sunlight, solar_mult, sim_seconds, anomaly_solar_penalty);
@@ -1188,17 +1363,10 @@ impl SimState {
 
         let mut transferred = 0.0;
         if craft.downlink_active && downlink_pass && craft.buffer_mb > 0.0 && craft.power_wh > 1.0 {
-            let body = self.bodies.body(body_idx);
-            let station_bandwidth = craft
-                .downlink_station_id
-                .as_ref()
-                .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
-                .map(|s| Self::station_bandwidth_for(s, body, deep_space_mult));
             let rate = craft.downlink_rate_mb_s(comms_mult, station_bandwidth, sim_seconds);
             transferred = (rate * dt).min(craft.buffer_mb);
             craft.buffer_mb -= transferred;
         }
-        let downlink_station_id = craft.downlink_station_id.clone();
 
         // Accrual routes ONLY through the assigned craft (1:1 binding).
         if transferred > 0.0
@@ -1234,6 +1402,46 @@ impl SimState {
         for event in pass_events.into_iter().chain(anomaly_events) {
             self.push_event(event);
         }
+
+        // J2 secular precession (first order): the node regresses and the
+        // perigee precesses; the in-plane phase is untouched. This is what
+        // makes sun-synchronous orbits (~97.8 deg at 550 km) actually work.
+        let j2 = self.bodies.body(body_idx).j2;
+        if j2 > 0.0
+            && let Some(el) = self.fleet[idx].elements.as_mut()
+        {
+            let a = el.semi_major_axis_km;
+            let p_semi = a * (1.0 - el.eccentricity * el.eccentricity);
+            if p_semi > 1.0 {
+                let n = crate::orbit::mean_motion_rad_s(mu, a);
+                let factor = n * j2 * (radius / p_semi).powi(2);
+                let cos_i = el.inclination_deg.to_radians().cos();
+                let raan_dot = (-1.5 * factor * cos_i).to_degrees();
+                let argp_dot = (0.75 * factor * (5.0 * cos_i * cos_i - 1.0)).to_degrees();
+                el.raan_deg = (el.raan_deg + raan_dot * dt).rem_euclid(360.0);
+                el.arg_perigee_deg = (el.arg_perigee_deg + argp_dot * dt).rem_euclid(360.0);
+            }
+        }
+    }
+
+    /// One-way light time (s) from Earth to the craft's central body:
+    /// a command uplinked at T cannot act before T + OWLT. Zero at Earth
+    /// (LEO delays are sub-second, below the tick).
+    fn command_light_delay_seconds(&self, craft_idx: usize) -> f64 {
+        const C_KM_S: f64 = 299_792.458;
+        let body_id = &self.fleet[craft_idx].body_id;
+        if body_id == "earth" {
+            return 0.0;
+        }
+        let Some(body_idx) = self.bodies.idx(body_id) else {
+            return 0.0;
+        };
+        let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
+        let t = self.clock.sim_seconds;
+        let e = self.bodies.heliocentric_position_km(earth_idx, t);
+        let b = self.bodies.heliocentric_position_km(body_idx, t);
+        let d = [b[0] - e[0], b[1] - e[1], b[2] - e[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_KM_S
     }
 
     fn try_execute_queued_command(
@@ -1242,15 +1450,24 @@ impl SimState {
         station_id: &str,
         station_name: &str,
     ) {
+        let now = self.clock.sim_seconds;
+        let owlt = self.command_light_delay_seconds(craft_idx);
         let craft = &mut self.fleet[craft_idx];
         let craft_id = craft.id;
+        // The uplink must have physically reached the craft: pass starts
+        // before queued_at + OWLT skip the command (it runs next pass).
         let idx = craft
             .command_queue
             .iter()
-            .position(|c| c.station_id == station_id);
+            .position(|c| c.station_id == station_id && now >= c.queued_at_sim_seconds + owlt);
         let Some(idx) = idx else { return };
         let cmd = craft.command_queue.remove(idx);
         let msg = execute_command(&cmd.command).to_string();
+        // FDIR mapping (procedure must match the fault class):
+        // - RebootComms  → CommsDropout only
+        // - ClearAnomaly → PowerGlitch only (EPS recovery)
+        // - SafeMode     → always; halves remaining sticky-fault time
+        let mut msg = msg;
         match cmd.command {
             CommandType::RebootComms => {
                 if let Some(a) = &craft.active_anomaly
@@ -1261,6 +1478,11 @@ impl SimState {
                         craft_id,
                         kind: AnomalyType::CommsDropout,
                     });
+                } else if craft.active_anomaly.is_some() {
+                    msg = "Reboot complete — no comms fault to clear (wrong procedure)"
+                        .into();
+                } else {
+                    msg = "Reboot complete — comms nominal".into();
                 }
             }
             CommandType::SafeMode => {
@@ -1269,8 +1491,10 @@ impl SimState {
                 }
                 craft.safe_mode_until = self.clock.sim_seconds + 300.0;
                 craft.payload_mode = PayloadMode::Safe;
-                // Safing also halves the remaining anomaly time.
-                if let Some(a) = craft.active_anomaly.as_mut() {
+                // Safing reduces remaining sticky-fault lifetime (load shed).
+                if let Some(a) = craft.active_anomaly.as_mut()
+                    && a.kind.is_sticky()
+                {
                     let elapsed = self.clock.sim_seconds - a.started_at_sim_seconds;
                     let remaining = (a.duration_seconds - elapsed).max(0.0);
                     a.duration_seconds = elapsed + remaining * 0.5;
@@ -1278,11 +1502,18 @@ impl SimState {
             }
             CommandType::ClearAnomaly => {
                 if let Some(a) = craft.active_anomaly.clone() {
-                    craft.clear_anomaly(self.clock.sim_seconds);
-                    self.push_event(SimEvent::AnomalyCleared {
-                        craft_id,
-                        kind: a.kind,
-                    });
+                    if a.kind == AnomalyType::PowerGlitch {
+                        craft.clear_anomaly(self.clock.sim_seconds);
+                        self.push_event(SimEvent::AnomalyCleared {
+                            craft_id,
+                            kind: AnomalyType::PowerGlitch,
+                        });
+                    } else {
+                        msg = "EPS clear ignored — active fault is not a power glitch (use reboot/safe)"
+                            .into();
+                    }
+                } else {
+                    msg = "EPS clear complete — no power fault latched".into();
                 }
             }
         }
@@ -1292,6 +1523,274 @@ impl SimState {
             station_name: station_name.to_string(),
             message: msg,
         });
+    }
+
+    /// Marketplace offers with contest/claim decoration applied.
+    #[must_use]
+    pub fn decorated_marketplace(&self) -> Vec<crate::company::ContractOffer> {
+        let mut offers = self.company.marketplace(&self.content);
+        self.market
+            .decorate_offers(&mut offers, &self.content, self.clock.sim_seconds);
+        // Hide player-active templates (already accepted).
+        for offer in &mut offers {
+            if self.company.contract_by_template(&offer.template_id).is_some() {
+                offer.available = false;
+            }
+        }
+        offers
+    }
+
+    fn accept_contract_inner(
+        &mut self,
+        contract_id: &str,
+        assigned_craft_id: Option<CraftId>,
+    ) -> Result<(), SimError> {
+        if self.company.active_contracts.len() >= self.max_active_contracts() {
+            return Err(SimError::InvalidAction("contract slots full".into()));
+        }
+        if self.company.contract_by_template(contract_id).is_some() {
+            return Err(SimError::InvalidAction("contract already active".into()));
+        }
+        if let Some(craft_id) = assigned_craft_id {
+            self.craft(craft_id)?;
+            if self.contract_assigned_to(craft_id).is_some() {
+                return Err(SimError::InvalidAction(
+                    "craft already has an assigned contract".into(),
+                ));
+            }
+        }
+        let offer = self
+            .decorated_marketplace()
+            .into_iter()
+            .find(|o| o.template_id == contract_id)
+            .ok_or_else(|| SimError::Content(format!("unknown contract: {contract_id}")))?;
+        if !offer.available {
+            let reason = if offer.claimed_by.is_some() {
+                "contract claimed by a rival — wait for it to reappear"
+            } else {
+                "contract not available (reputation, program, or already completed)"
+            };
+            return Err(SimError::InvalidAction(reason.into()));
+        }
+        let template = self
+            .content
+            .contract(contract_id)
+            .ok_or_else(|| SimError::Content(format!("unknown contract: {contract_id}")))?
+            .clone();
+        let completions = if self.company.game_mode == GameMode::Campaign {
+            self.company.completions_of(contract_id)
+        } else {
+            0
+        };
+        let mut contract =
+            ActiveContract::from_template(&template, self.clock.sim_seconds, completions);
+        if completions == 0 && template.advance_fraction > 0.0 {
+            let advance = contract.payout_usd * template.advance_fraction;
+            contract.advance_paid_usd = advance;
+            self.company.cash_usd += advance;
+        }
+        contract.assigned_craft_id = assigned_craft_id;
+        let advance = contract.advance_paid_usd;
+        // Prestige: snatching a contested offer counts as a contested win.
+        if self.market.contest_for(contract_id).is_some() {
+            self.company.contested_wins = self.company.contested_wins.saturating_add(1);
+        }
+        self.company.active_contracts.push(contract);
+        // Player took it: drop any contest / claim on this template.
+        self.market
+            .contests
+            .retain(|c| c.contract_id != contract_id);
+        self.market.claims.retain(|c| c.contract_id != contract_id);
+        self.push_event(SimEvent::ActionApplied {
+            message: if advance > 0.0 {
+                format!(
+                    "Accepted contract: {} (+${:.0} advance)",
+                    template.name, advance
+                )
+            } else {
+                format!("Accepted contract: {}", template.name)
+            },
+        });
+        Ok(())
+    }
+
+    /// Expire or start content-driven world events (M20).
+    fn tick_weather(&mut self) {
+        if !self.weather.enabled {
+            return;
+        }
+        let now = self.clock.sim_seconds;
+        if let Some(active) = self.weather.active.clone() {
+            if active.ends_at_sim_seconds <= now {
+                let name = self
+                    .content
+                    .world_event(&active.event_id)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_else(|| active.event_id.clone());
+                self.weather.active = None;
+                let pressure = crate::constants::career_pressure_interval_scale(
+                    self.company.completed_programs.len(),
+                );
+                self.weather.next_roll_sim_seconds =
+                    now + weather::COOLDOWN_DAYS * SECONDS_PER_DAY * pressure;
+                self.push_event(SimEvent::WorldEventEnded {
+                    event_id: active.event_id,
+                    name,
+                });
+            }
+            return;
+        }
+        if now < self.weather.next_roll_sim_seconds {
+            return;
+        }
+        let pressure = crate::constants::career_pressure_interval_scale(
+            self.company.completed_programs.len(),
+        );
+        let day_bucket = (now / SECONDS_PER_DAY).floor() as u64;
+        let Some(def) = pick_event(&self.content.world_events, day_bucket).cloned() else {
+            self.weather.next_roll_sim_seconds =
+                now + weather::CHECK_INTERVAL_DAYS * SECONDS_PER_DAY * pressure;
+            return;
+        };
+        let ends = now + def.duration_days * SECONDS_PER_DAY;
+        self.weather.active = Some(ActiveWorldEvent {
+            event_id: def.id.clone(),
+            started_at_sim_seconds: now,
+            ends_at_sim_seconds: ends,
+        });
+        self.weather.next_roll_sim_seconds =
+            ends + weather::COOLDOWN_DAYS * SECONDS_PER_DAY * pressure;
+        self.push_event(SimEvent::WorldEventStarted {
+            event_id: def.id,
+            name: def.name,
+            ends_at_sim_seconds: ends,
+        });
+    }
+
+    /// Deterministic rival market tick: resolve expired contests, start new ones.
+    fn tick_market(&mut self) {
+        if !self.market.enabled {
+            return;
+        }
+        let now = self.clock.sim_seconds;
+        // Expire cooldowns.
+        self.market
+            .claims
+            .retain(|c| c.available_again_at > now);
+
+        // Resolve contests that have timed out → rival claims.
+        let expired: Vec<_> = self
+            .market
+            .contests
+            .iter()
+            .filter(|c| c.ends_at_sim_seconds <= now)
+            .cloned()
+            .collect();
+        for contest in expired {
+            self.market
+                .contests
+                .retain(|c| c.contract_id != contest.contract_id);
+            // Player already accepted → nothing to claim.
+            if self
+                .company
+                .contract_by_template(&contest.contract_id)
+                .is_some()
+            {
+                continue;
+            }
+            if let Some(rival) = self
+                .market
+                .rivals
+                .iter_mut()
+                .find(|r| r.id == contest.competitor_id)
+            {
+                rival.contracts_won += 1;
+            }
+            let name = self
+                .content
+                .competitor(&contest.competitor_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| contest.competitor_id.clone());
+            self.market.claims.push(market::RivalClaim {
+                contract_id: contest.contract_id.clone(),
+                competitor_id: contest.competitor_id.clone(),
+                available_again_at: now + claim_cooldown_seconds(),
+            });
+            self.push_event(SimEvent::ContractClaimedByRival {
+                contract_id: contest.contract_id,
+                competitor_id: contest.competitor_id,
+                competitor_name: name,
+            });
+        }
+
+        // Rival actions: each due rival opens at most one new contest.
+        let rival_ids: Vec<String> = self.market.rivals.iter().map(|r| r.id.clone()).collect();
+        for rival_id in rival_ids {
+            let Some(rival_idx) = self.market.rivals.iter().position(|r| r.id == rival_id) else {
+                continue;
+            };
+            if self.market.rivals[rival_idx].next_action_sim_seconds > now {
+                continue;
+            }
+            let def = match self.content.competitor(&rival_id).cloned() {
+                Some(d) => d,
+                None => continue,
+            };
+            let pressure = crate::constants::career_pressure_interval_scale(
+                self.company.completed_programs.len(),
+            );
+            let interval = market::action_interval_seconds_scaled(&def, pressure);
+            self.market.rivals[rival_idx].next_action_sim_seconds = now + interval;
+
+            let target = self.pick_contest_target(&def);
+            let Some(contract_id) = target else {
+                continue;
+            };
+            // Don't stack contests on the same offer.
+            if self.market.contest_for(&contract_id).is_some() {
+                continue;
+            }
+            let ends = now + contest_duration_seconds();
+            self.market.contests.push(market::Contest {
+                contract_id: contract_id.clone(),
+                competitor_id: rival_id.clone(),
+                ends_at_sim_seconds: ends,
+            });
+            self.push_event(SimEvent::ContractContested {
+                contract_id,
+                competitor_id: rival_id,
+                competitor_name: def.name,
+                ends_at_sim_seconds: ends,
+            });
+        }
+    }
+
+    /// First eligible offer for this rival (stable order, focus bodies preferred).
+    fn pick_contest_target(&self, def: &crate::content::CompetitorDef) -> Option<String> {
+        let now = self.clock.sim_seconds;
+        let eligible = |offer: &crate::company::ContractOffer| {
+            offer.available
+                && offer.claimed_by.is_none()
+                && offer.contested_by.is_none()
+                && self
+                    .company
+                    .contract_by_template(&offer.template_id)
+                    .is_none()
+                && self.market.is_claimed(&offer.template_id, now).is_none()
+        };
+        let mut offers = self.decorated_marketplace();
+        offers.retain(eligible);
+        offers.sort_by(|a, b| a.template_id.cmp(&b.template_id));
+        if !def.focus_bodies.is_empty() {
+            if let Some(id) = offers
+                .iter()
+                .find(|o| def.focus_bodies.iter().any(|b| b == &o.body_id))
+                .map(|o| o.template_id.clone())
+            {
+                return Some(id);
+            }
+        }
+        offers.into_iter().next().map(|o| o.template_id)
     }
 
     pub fn check_contracts(&mut self) {
@@ -1429,8 +1928,24 @@ impl SimState {
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         let game_phase = self.derive_game_phase();
-        let marketplace = self.company.marketplace(&self.content);
+        let marketplace = self.decorated_marketplace();
         let now = self.clock.sim_seconds;
+        let competitors: Vec<CompetitorSnapshot> = self
+            .market
+            .rivals
+            .iter()
+            .filter_map(|r| {
+                let def = self.content.competitor(&r.id)?;
+                Some(CompetitorSnapshot {
+                    id: r.id.clone(),
+                    name: def.name.clone(),
+                    contracts_won: r.contracts_won,
+                    aggressiveness: def.aggressiveness,
+                    focus_bodies: def.focus_bodies.clone(),
+                    next_action_sim_seconds: r.next_action_sim_seconds,
+                })
+            })
+            .collect();
 
         let spacecraft: Vec<SpacecraftSnapshot> = self
             .fleet
@@ -1451,6 +1966,8 @@ impl SimState {
                 bandwidth_mbps: station.bandwidth_mbps,
                 body_id: station.body_id.clone(),
                 dsn: station.dsn,
+                requires_tech: station.requires_tech.clone(),
+                unlocked: self.station_available(station),
             })
             .collect();
 
@@ -1544,6 +2061,21 @@ impl SimState {
                     completion_grant_usd: p.completion_grant_usd,
                 })
                 .collect(),
+            max_flights: self.max_flights() as u32,
+            active_flights: self.active_flights() as u32,
+            market_enabled: self.market.enabled,
+            competitors,
+            active_world_event: self.weather.active.as_ref().and_then(|a| {
+                self.content
+                    .world_event(&a.event_id)
+                    .map(|def| WorldEventSnapshot::from_active(def, a.ends_at_sim_seconds))
+            }),
+            prestige: prestige::compute_prestige(
+                &self.company,
+                &self.fleet,
+                &self.market,
+                &self.content,
+            ),
         }
     }
 
@@ -1574,7 +2106,9 @@ impl SimState {
             let ecef = eci_to_ecef_km(craft_body.rotation_rad_s, eci, self.clock.sim_seconds);
             let los = earth_los_now(&elements);
             let in_pass = self.ground_stations.iter().any(|s| {
-                if s.body_id == craft_body.id {
+                if !self.station_available(s) {
+                    false
+                } else if s.body_id == craft_body.id {
                     is_in_pass(
                         craft_body.radius_km,
                         s.latitude_deg,
@@ -1583,7 +2117,7 @@ impl SimState {
                         ecef,
                     )
                 } else {
-                    s.dsn && los
+                    s.dsn && craft_body.id != "earth" && los
                 }
             });
             let sunlight = in_sunlight(eci, sun_dir, craft_body.radius_km);
@@ -1592,11 +2126,11 @@ impl SimState {
             ([0.0; 3], [0.0; 3], vec![], false, true)
         };
 
-        // Per-craft station geometry (reachable stations only).
+        // Per-craft station geometry (reachable + unlocked stations only).
         let station_status: Vec<CraftStationStatus> = self
             .ground_stations
             .iter()
-            .filter(|st| Self::station_reachable(st, &craft_body.id))
+            .filter(|st| self.station_reachable(st, &craft_body.id))
             .map(|station| {
                 let local = station.body_id == craft_body.id;
                 let deep_space = station.dsn && !local && craft_body.id != "earth";
@@ -1657,7 +2191,7 @@ impl SimState {
                     elevation_deg: elevation,
                     in_pass,
                     next_pass_in_seconds,
-                    bandwidth_mbps: Self::station_bandwidth_for(
+                    bandwidth_mbps: self.station_bandwidth_for(
                         station,
                         craft_body,
                         self.company.deep_space_comms_multiplier,
@@ -1667,6 +2201,10 @@ impl SimState {
             .collect();
 
         let apsis = craft.elements.is_some_and(|_| at_apsis(position, velocity));
+        let r_mag =
+            (position[0] * position[0] + position[1] * position[1] + position[2] * position[2])
+                .sqrt();
+        let at_node = craft.elements.is_some() && r_mag > 1.0 && position[2].abs() < 0.02 * r_mag;
         let (seconds_to_perigee, seconds_to_apogee) = craft
             .elements
             .filter(|_| craft.phase == CraftPhase::OnOrbit)
@@ -1713,7 +2251,7 @@ impl SimState {
                     .as_ref()
                     .and_then(|id| self.ground_stations.iter().find(|s| &s.id == id))
                     .map(|s| {
-                        Self::station_bandwidth_for(
+                        self.station_bandwidth_for(
                             s,
                             craft_body,
                             self.company.deep_space_comms_multiplier,
@@ -1733,6 +2271,7 @@ impl SimState {
             total_delta_v_used_km_s: craft.total_delta_v_used_km_s,
             pending_hohmann: craft.pending_hohmann.clone(),
             at_apsis: apsis,
+            at_node,
             seconds_to_perigee,
             seconds_to_apogee,
             hohmann_preview,
@@ -1742,27 +2281,6 @@ impl SimState {
             command_queue: craft.command_queue.clone(),
             active_anomaly: anomaly_type,
             anomaly_label,
-            transfer: craft.transfer.as_ref().map(|t| {
-                let span = (t.arrival_sim_seconds - t.departure_sim_seconds).max(1.0);
-                TransferSnapshot {
-                    origin_body_id: t.origin_body_id.clone(),
-                    target_body_id: t.target_body_id.clone(),
-                    frame_body_id: t.frame_body_id.clone(),
-                    departure_sim_seconds: t.departure_sim_seconds,
-                    arrival_sim_seconds: t.arrival_sim_seconds,
-                    progress: ((self.clock.sim_seconds - t.departure_sim_seconds) / span)
-                        .clamp(0.0, 1.0),
-                    capture_dv_km_s: t.capture_dv_km_s,
-                }
-            }),
-            transfer_planner: self.transfer_planner_snapshot(craft),
-            ops_cost_usd_per_day: Self::craft_ops_raw_usd_per_day(craft)
-                * self.company.ops_cost_multiplier,
-            contracts_completed: craft.contracts_completed,
-            lifetime_revenue_usd: craft.lifetime_revenue_usd,
-            lifetime_ops_usd: craft.lifetime_ops_usd,
-            launched_at_sim_seconds: craft.launched_at_sim_seconds,
-            station_status,
             light_delay_seconds: {
                 const C_KM_S: f64 = 299_792.458;
                 let earth_idx = self.bodies.idx("earth").expect("registry holds earth");
@@ -1780,6 +2298,30 @@ impl SimState {
                 ];
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / C_KM_S
             },
+            solar_flux: self
+                .bodies
+                .solar_flux_at(craft_body_idx, self.clock.sim_seconds),
+            ops_cost_usd_per_day: Self::craft_ops_raw_usd_per_day(craft)
+                * self.company.ops_cost_multiplier,
+            contracts_completed: craft.contracts_completed,
+            lifetime_revenue_usd: craft.lifetime_revenue_usd,
+            lifetime_ops_usd: craft.lifetime_ops_usd,
+            launched_at_sim_seconds: craft.launched_at_sim_seconds,
+            station_status,
+            transfer: craft.transfer.as_ref().map(|t| {
+                let span = (t.arrival_sim_seconds - t.departure_sim_seconds).max(1.0);
+                TransferSnapshot {
+                    origin_body_id: t.origin_body_id.clone(),
+                    target_body_id: t.target_body_id.clone(),
+                    frame_body_id: t.frame_body_id.clone(),
+                    departure_sim_seconds: t.departure_sim_seconds,
+                    arrival_sim_seconds: t.arrival_sim_seconds,
+                    progress: ((self.clock.sim_seconds - t.departure_sim_seconds) / span)
+                        .clamp(0.0, 1.0),
+                    capture_dv_km_s: t.capture_dv_km_s,
+                }
+            }),
+            transfer_planner: self.transfer_planner_snapshot(craft),
         }
     }
 

@@ -1,4 +1,9 @@
-import type { ActiveContract, Snapshot } from "../types.ts";
+import type {
+  ActiveContract,
+  ActiveContractSnapshot,
+  Snapshot,
+  SpacecraftSnapshot,
+} from "../types.ts";
 
 const SECONDS_PER_DAY = 86_400;
 
@@ -24,19 +29,48 @@ export function contractProgress(contract: ActiveContract): number {
   );
 }
 
+/**
+ * Whether the craft's *selected* downlink station is currently in link
+ * (elevation/LOS). Falls back to craft-wide `in_pass` if no station chosen.
+ * Matches sim tick: transfer only accrues when the selected dish sees the craft.
+ */
+export function isDownlinkLinkLive(craft: SpacecraftSnapshot): boolean {
+  const id = craft.downlink_station_id;
+  if (id) {
+    const st = craft.station_status.find((x) => x.station_id === id);
+    if (st) return st.in_pass;
+  }
+  return craft.in_pass;
+}
+
+/** Soonest upcoming pass for a craft (by `next_pass_in_seconds`, not elevation). */
 export function nextPassStation(
   s: Snapshot,
-): { name: string; elevation: number } | null {
-  const craft = s.spacecraft[0] ?? null;
-  if (!craft) return null;
-  const best = craft.station_status
-    .filter((st) => !st.in_pass && st.elevation_deg >= 0)
-    .sort((a, b) => b.elevation_deg - a.elevation_deg)[0];
+  craft?: SpacecraftSnapshot | null,
+): { name: string; elevation: number; etaSeconds: number | null } | null {
+  const c = craft ?? s.spacecraft[0] ?? null;
+  if (!c) return null;
+
+  const withEta = c.station_status
+    .filter(
+      (st) =>
+        !st.in_pass &&
+        st.next_pass_in_seconds != null &&
+        Number.isFinite(st.next_pass_in_seconds),
+    )
+    .sort(
+      (a, b) => (a.next_pass_in_seconds ?? 1e12) - (b.next_pass_in_seconds ?? 1e12),
+    );
+  const best = withEta[0];
   if (!best) return null;
   const name =
     s.ground_stations.find((g) => g.id === best.station_id)?.name ??
     best.station_id;
-  return { name, elevation: best.elevation_deg };
+  return {
+    name,
+    elevation: best.elevation_deg,
+    etaSeconds: best.next_pass_in_seconds,
+  };
 }
 
 export function payloadModeLabel(mode: string): string {
@@ -56,6 +90,19 @@ export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(0)}s`;
   if (seconds < 3600) return `${(seconds / 60).toFixed(1)} min`;
   return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+/** Instantaneous downlink readout: Off / Armed (no link) / live KB/s. */
+export function downlinkRateLabel(craft: SpacecraftSnapshot): string {
+  if (!craft.downlink_active) return "Off";
+  const kbps = craft.downlink_rate_mb_s * 1000;
+  if (!isDownlinkLinkLive(craft)) {
+    return kbps > 0 ? "Armed" : "On";
+  }
+  if (craft.power_wh <= 1) return "No power";
+  if (craft.buffer_mb < 0.01) return "0 KB/s";
+  if (craft.active_anomaly === "comms_dropout") return "Comms out";
+  return `${kbps.toFixed(0)} KB/s`;
 }
 
 export interface OrbitRequirements {
@@ -81,17 +128,41 @@ export interface DataFlowStatus {
   kind: "ok" | "warn" | "bad";
 }
 
-/** One-line diagnosis of why contract data is (or isn't) flowing. */
-export function dataFlowStatus(s: Snapshot): DataFlowStatus | null {
-  const craft = s.spacecraft[0] ?? null;
-  if (craft?.phase !== "OnOrbit") return null;
-  if (s.active_contracts[0]?.orbit_ok === false) {
+/**
+ * One-line diagnosis of why contract data is (or isn't) flowing for a craft.
+ * Prefer the selected craft + its assigned contract (not fleet index 0).
+ */
+export function dataFlowStatus(
+  s: Snapshot,
+  craft?: SpacecraftSnapshot | null,
+  contract?: ActiveContractSnapshot | null,
+): DataFlowStatus | null {
+  const c = craft ?? s.spacecraft[0] ?? null;
+  if (c?.phase !== "OnOrbit") return null;
+
+  const assigned =
+    contract ??
+    s.active_contracts.find((ac) => ac.assigned_craft_id === c.id) ??
+    null;
+
+  if (assigned?.orbit_ok === false) {
     return { text: "Orbit out of spec — data not accepted", kind: "bad" };
   }
-  if (!craft.downlink_active) {
-    if (craft.buffer_mb < 1 && craft.imaging_rate_mb_s === 0) {
+  if (
+    assigned &&
+    assigned.body_id &&
+    assigned.body_id !== c.body_id
+  ) {
+    return {
+      text: `Wrong body for contract (need ${assigned.body_id})`,
+      kind: "bad",
+    };
+  }
+
+  if (!c.downlink_active) {
+    if (c.buffer_mb < 1 && c.imaging_rate_mb_s === 0) {
       return {
-        text: craft.in_sunlight
+        text: c.in_sunlight
           ? "Not imaging (safe mode or anomaly)"
           : "Not imaging (eclipse) — waiting for sunlight",
         kind: "warn",
@@ -99,20 +170,39 @@ export function dataFlowStatus(s: Snapshot): DataFlowStatus | null {
     }
     return { text: "Downlink off — buffer filling", kind: "warn" };
   }
-  if (!craft.in_pass) {
-    const next = craft.station_status
-      .map((st) => st.next_pass_in_seconds)
-      .filter((v): v is number => v != null)
-      .sort((a, b) => a - b)[0];
+
+  if (!isDownlinkLinkLive(c)) {
+    // ETA for the selected dish first, else any soonest window.
+    const selected = c.downlink_station_id
+      ? c.station_status.find((st) => st.station_id === c.downlink_station_id)
+      : null;
+    const next =
+      selected?.next_pass_in_seconds ??
+      c.station_status
+        .map((st) => st.next_pass_in_seconds)
+        .filter((v): v is number => v != null)
+        .sort((a, b) => a - b)[0];
+    const dish =
+      selected &&
+      s.ground_stations.find((g) => g.id === selected.station_id)?.name;
     return {
-      text: `Waiting for pass${next != null ? ` (next in ${formatDuration(next)})` : ""}`,
+      text: `Waiting for ${dish ? `${dish} ` : ""}pass${next != null ? ` (next in ${formatDuration(next)})` : ""}`,
       kind: "warn",
     };
   }
-  if (craft.buffer_mb < 1) {
+
+  if (c.power_wh <= 1) {
+    return { text: "No power for downlink", kind: "bad" };
+  }
+  if (c.active_anomaly === "comms_dropout") {
+    return { text: "Comms dropout — queue reboot at station", kind: "bad" };
+  }
+  if (c.buffer_mb < 1) {
     return { text: "Buffer empty — nothing to downlink", kind: "warn" };
   }
-  return { text: "Downlinking ✓", kind: "ok" };
+
+  const kbps = (c.downlink_rate_mb_s * 1000).toFixed(0);
+  return { text: `Downlinking ✓ · ${kbps} KB/s`, kind: "ok" };
 }
 
 /** Sim-days until bankruptcy (−50k floor); null when not burning cash. */
@@ -124,7 +214,7 @@ export function bankruptcyRunwayDays(s: Snapshot): number | null {
 export function commandLabel(cmd: string): string {
   switch (cmd) {
     case "clear_anomaly":
-      return "Clear anomaly";
+      return "EPS clear";
     case "safe_mode":
       return "Safe mode";
     case "reboot_comms":

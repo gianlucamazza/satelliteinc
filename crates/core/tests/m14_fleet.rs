@@ -39,6 +39,14 @@ fn two_craft_sim() -> SimState {
 }
 
 #[test]
+fn snapshot_exposes_flight_slots() {
+    let sim = two_craft_sim();
+    let snap = sim.snapshot();
+    assert_eq!(snap.max_flights, 6, "sandbox mission control cap");
+    assert_eq!(snap.active_flights, 2);
+}
+
+#[test]
 fn two_craft_fly_independent_orbits() {
     let mut sim = two_craft_sim();
     sim.apply_action(PlayerAction::SetTimeAccel {

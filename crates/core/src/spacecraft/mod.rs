@@ -140,7 +140,7 @@ impl Spacecraft {
 
     #[must_use]
     pub fn max_buffer_mb(&self) -> f64 {
-        2_048.0
+        self.bus.buffer_mb
     }
 
     #[must_use]
@@ -266,15 +266,18 @@ impl Spacecraft {
         if self.phase != CraftPhase::OnOrbit || !in_sunlight || self.in_safe_mode(sim_seconds) {
             return 0.0;
         }
+        // Peak rate is hardware (bus); modes derate it — the radio and the
+        // imager share the payload power budget.
+        let peak = self.bus.imaging_rate_mb_s;
         match self.payload_mode {
             PayloadMode::Imaging => {
                 if self.downlink_active {
-                    1.0
+                    peak * 0.2
                 } else {
-                    5.0
+                    peak
                 }
             }
-            PayloadMode::DownlinkPriority => 0.5,
+            PayloadMode::DownlinkPriority => peak * 0.1,
             PayloadMode::Safe => 0.0,
         }
     }

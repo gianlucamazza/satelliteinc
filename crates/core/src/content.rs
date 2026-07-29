@@ -20,6 +20,69 @@ pub struct GameContent {
     /// cash buy-in, and the previous Program's keystone contract.
     #[serde(default)]
     pub programs: Vec<ProgramDef>,
+    /// Rival firms that contest marketplace offers (M19). Empty = no market pressure.
+    #[serde(default)]
+    pub competitors: Vec<CompetitorDef>,
+    /// Global space-weather / campaign pressure events (M20).
+    #[serde(default)]
+    pub world_events: Vec<WorldEventDef>,
+}
+
+/// A scheduled world pressure event (solar storm, DSN congestion, …).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldEventDef {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Relative weight for deterministic picks (min 1).
+    #[serde(default = "default_event_weight")]
+    pub weight: u32,
+    /// How long the event lasts once started.
+    pub duration_days: f64,
+    /// Empty = all bodies; otherwise only listed bodies feel the effects.
+    #[serde(default)]
+    pub body_ids: Vec<String>,
+    /// Multiplies solar panel output while active (1.0 = none).
+    #[serde(default = "default_one")]
+    pub solar_penalty: f64,
+    /// Multiplies anomaly frequency (1.0 = none).
+    #[serde(default = "default_one")]
+    pub anomaly_rate_multiplier: f64,
+    /// Multiplies link bandwidth (1.0 = none).
+    #[serde(default = "default_one")]
+    pub bandwidth_multiplier: f64,
+    /// When true, bandwidth effect applies only to DSN (deep-space) links.
+    #[serde(default)]
+    pub dsn_only: bool,
+}
+
+fn default_event_weight() -> u32 {
+    1
+}
+
+impl WorldEventDef {
+    #[must_use]
+    pub fn applies_to_body(&self, body_id: &str) -> bool {
+        self.body_ids.is_empty() || self.body_ids.iter().any(|b| b == body_id)
+    }
+}
+
+/// A rival agency that competes for contracts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompetitorDef {
+    pub id: String,
+    pub name: String,
+    /// Higher = more frequent contest actions (clamped 0.25–2.0 at runtime).
+    #[serde(default = "default_aggressiveness")]
+    pub aggressiveness: f64,
+    /// Prefer contracts on these bodies; empty = any body.
+    #[serde(default)]
+    pub focus_bodies: Vec<String>,
+}
+
+fn default_aggressiveness() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +154,10 @@ pub struct CelestialBodyDef {
     /// insertion burn physical (~1.5 km/s instead of ~7).
     #[serde(default)]
     pub capture_eccentricity: f64,
+    /// Second zonal harmonic: drives nodal regression and apsidal
+    /// precession (sun-synchronous orbits become real).
+    #[serde(default)]
+    pub j2: f64,
 }
 
 fn default_injection_multiplier() -> f64 {
@@ -168,6 +235,7 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             injection_cost_multiplier: 2.0,
             has_atmosphere: false,
             capture_eccentricity: 0.0,
+            j2: 0.0,
         },
         CelestialBodyDef {
             id: "earth".into(),
@@ -194,6 +262,7 @@ fn default_bodies() -> Vec<CelestialBodyDef> {
             injection_cost_multiplier: 2.0,
             has_atmosphere: true,
             capture_eccentricity: 0.0,
+            j2: 1.082_63e-3,
         },
     ]
 }
@@ -216,6 +285,12 @@ pub struct BusTemplate {
     /// sunlight, eclipse, and dust.
     #[serde(default)]
     pub rtg_power_w: f64,
+    /// Onboard data buffer capacity.
+    #[serde(default = "default_buffer_mb")]
+    pub buffer_mb: f64,
+    /// Peak imaging rate (idle, in sunlight); modes scale it down.
+    #[serde(default = "default_imaging_rate")]
+    pub imaging_rate_mb_s: f64,
     /// Recurring operating cost while this bus is on orbit.
     #[serde(default = "default_ops_cost")]
     pub ops_cost_usd_per_day: f64,
@@ -229,6 +304,14 @@ fn default_unlocked() -> bool {
 
 fn default_ops_cost() -> f64 {
     5_000.0
+}
+
+fn default_buffer_mb() -> f64 {
+    2_048.0
+}
+
+fn default_imaging_rate() -> f64 {
+    5.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +330,9 @@ pub struct GroundStationDef {
     /// line-of-sight link at `body.dsn_bandwidth_factor` of its bandwidth.
     #[serde(default)]
     pub dsn: bool,
+    /// Optional tech gate. Sandbox ignores this (all stations available).
+    #[serde(default)]
+    pub requires_tech: Option<String>,
 }
 
 pub(crate) fn default_body_id() -> String {
@@ -440,6 +526,8 @@ impl GameContent {
                 || bus.comms_power_w < 0.0
                 || bus.solar_power_w <= 0.0
                 || bus.ops_cost_usd_per_day < 0.0
+                || bus.buffer_mb <= 0.0
+                || bus.imaging_rate_mb_s <= 0.0
             {
                 return Err(SimError::Content(format!(
                     "bus '{}' has non-physical parameters",
@@ -491,6 +579,14 @@ impl GameContent {
             if station.dsn && station.body_id != "earth" {
                 return Err(SimError::Content(format!(
                     "DSN station '{}' must be on earth",
+                    station.id
+                )));
+            }
+            if let Some(tech_id) = &station.requires_tech
+                && self.tech(tech_id).is_none()
+            {
+                return Err(SimError::Content(format!(
+                    "station '{}' requires unknown tech '{tech_id}'",
                     station.id
                 )));
             }
@@ -641,6 +737,59 @@ impl GameContent {
                 )));
             }
         }
+        for (i, rival) in self.competitors.iter().enumerate() {
+            if self.competitors[..i].iter().any(|r| r.id == rival.id) {
+                return Err(SimError::Content(format!(
+                    "duplicate competitor '{}'",
+                    rival.id
+                )));
+            }
+            if rival.aggressiveness <= 0.0 {
+                return Err(SimError::Content(format!(
+                    "competitor '{}' has non-positive aggressiveness",
+                    rival.id
+                )));
+            }
+            for body_id in &rival.focus_bodies {
+                if !self.bodies.iter().any(|b| b.id == *body_id) {
+                    return Err(SimError::Content(format!(
+                        "competitor '{}' focuses unknown body '{body_id}'",
+                        rival.id
+                    )));
+                }
+            }
+        }
+        for (i, ev) in self.world_events.iter().enumerate() {
+            if self.world_events[..i].iter().any(|e| e.id == ev.id) {
+                return Err(SimError::Content(format!(
+                    "duplicate world event '{}'",
+                    ev.id
+                )));
+            }
+            if ev.duration_days <= 0.0 {
+                return Err(SimError::Content(format!(
+                    "world event '{}' has non-positive duration",
+                    ev.id
+                )));
+            }
+            if ev.solar_penalty <= 0.0
+                || ev.anomaly_rate_multiplier <= 0.0
+                || ev.bandwidth_multiplier <= 0.0
+            {
+                return Err(SimError::Content(format!(
+                    "world event '{}' has non-positive multipliers",
+                    ev.id
+                )));
+            }
+            for body_id in &ev.body_ids {
+                if !self.bodies.iter().any(|b| b.id == *body_id) {
+                    return Err(SimError::Content(format!(
+                        "world event '{}' references unknown body '{body_id}'",
+                        ev.id
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -660,6 +809,16 @@ impl GameContent {
     }
 
     #[must_use]
+    pub fn competitor(&self, id: &str) -> Option<&CompetitorDef> {
+        self.competitors.iter().find(|c| c.id == id)
+    }
+
+    #[must_use]
+    pub fn world_event(&self, id: &str) -> Option<&WorldEventDef> {
+        self.world_events.iter().find(|e| e.id == id)
+    }
+
+    #[must_use]
     pub fn program_for_body(&self, body_id: &str) -> Option<&ProgramDef> {
         self.programs.iter().find(|p| p.body_id == body_id)
     }
@@ -669,6 +828,7 @@ impl GameContent {
     }
 
     pub fn scenario(&self, id: &str) -> Option<&crate::scenario::ScenarioTemplate> {
+        let id = crate::scenario::resolve_scenario_id(id);
         self.scenarios.iter().find(|s| s.id == id)
     }
 }

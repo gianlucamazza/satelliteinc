@@ -29,6 +29,12 @@ pub struct ScenarioTemplate {
     pub altitude_km: f64,
     #[serde(default = "default_inc")]
     pub inclination_deg: f64,
+    /// Override market pressure: `None` = on in campaign, off in sandbox.
+    #[serde(default)]
+    pub competitors_enabled: Option<bool>,
+    /// Override world events: `None` = on in campaign, off in sandbox.
+    #[serde(default)]
+    pub world_events_enabled: Option<bool>,
 }
 
 fn default_alt() -> f64 {
@@ -39,8 +45,33 @@ fn default_inc() -> f64 {
     97.0
 }
 
+/// Map legacy scenario ids (pre-unified Career) onto the two current entries.
+#[must_use]
+pub fn resolve_scenario_id(id: &str) -> &str {
+    match id {
+        "campaign_start" | "hard_campaign" => "career",
+        "sandbox_lab" | "competitor_gauntlet" => "sandbox",
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_scenario_ids_alias_to_career_and_sandbox() {
+        assert_eq!(resolve_scenario_id("campaign_start"), "career");
+        assert_eq!(resolve_scenario_id("hard_campaign"), "career");
+        assert_eq!(resolve_scenario_id("sandbox_lab"), "sandbox");
+        assert_eq!(resolve_scenario_id("competitor_gauntlet"), "sandbox");
+        assert_eq!(resolve_scenario_id("career"), "career");
+    }
+}
+
 impl SimState {
     pub fn apply_scenario(&mut self, scenario_id: &str) -> Result<(), SimError> {
+        let scenario_id = resolve_scenario_id(scenario_id);
         let scenario = self
             .content
             .scenario(scenario_id)
@@ -88,6 +119,16 @@ impl SimState {
             }
         }
         self.company = company;
+        let enabled = crate::market::market_enabled_for(
+            scenario.game_mode,
+            scenario.competitors_enabled,
+        );
+        self.market = crate::market::MarketState::from_content(&self.content, enabled, 0.0);
+        let weather_on = crate::weather::WeatherState::weather_enabled_for(
+            scenario.game_mode,
+            scenario.world_events_enabled,
+        );
+        self.weather = crate::weather::WeatherState::from_content(&self.content, weather_on, 0.0);
 
         let mut craft = Spacecraft::new_from_bus(&bus, &bus.name, 0);
         craft.body_id.clone_from(&scenario.body_id);

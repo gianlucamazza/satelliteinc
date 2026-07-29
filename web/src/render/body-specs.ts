@@ -27,8 +27,21 @@ const STYLES: Record<string, BodyStyle> = {
     fallbackColor: 0xb5532a,
     emissive: 0x140a06,
   },
-  venus: { fallbackColor: 0xd9b078, emissive: 0x141006 },
-  jupiter: { fallbackColor: 0xc8a678, emissive: 0x14100a },
+  // Venus/Jupiter textures: Solar System Scope (CC BY 4.0) — see README attribution.
+  venus: {
+    textureUrl: "/textures/venus_2048.jpg",
+    remoteFallbackUrl:
+      "https://www.solarsystemscope.com/textures/download/2k_venus_atmosphere.jpg",
+    fallbackColor: 0xd9b078,
+    emissive: 0x141006,
+  },
+  jupiter: {
+    textureUrl: "/textures/jupiter_2048.jpg",
+    remoteFallbackUrl:
+      "https://www.solarsystemscope.com/textures/download/2k_jupiter.jpg",
+    fallbackColor: 0xc8a678,
+    emissive: 0x14100a,
+  },
 };
 
 const DEFAULT_STYLE: BodyStyle = {
