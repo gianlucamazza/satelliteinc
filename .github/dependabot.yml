@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      wasm-bindgen:
+        applies-to: security-updates
+        patterns:
+          - "wasm-bindgen"
+          - "wasm-bindgen-*"
+          - "js-sys"
+          - "web-sys"
+      serde:
+        applies-to: security-updates
+        patterns:
+          - "serde"
+          - "serde_derive"
+
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      typescript-eslint:
+        applies-to: security-updates
+        patterns:
+          - "typescript-eslint"
+          - "@typescript-eslint/*"
+      vitest:
+        applies-to: security-updates
+        patterns:
+          - "vitest"
+          - "@vitest/*"
