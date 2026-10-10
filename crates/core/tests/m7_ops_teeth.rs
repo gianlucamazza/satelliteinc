@@ -125,10 +125,7 @@ fn eps_clear_only_clears_power_glitch() {
         .unwrap();
     for _ in 0..3_000 {
         sim.step(0.016);
-        if common::only_craft(&sim)
-            .command_queue
-            .is_empty()
-        {
+        if common::only_craft(&sim).command_queue.is_empty() {
             break;
         }
     }

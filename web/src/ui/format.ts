@@ -148,11 +148,7 @@ export function dataFlowStatus(
   if (assigned?.orbit_ok === false) {
     return { text: "Orbit out of spec — data not accepted", kind: "bad" };
   }
-  if (
-    assigned &&
-    assigned.body_id &&
-    assigned.body_id !== c.body_id
-  ) {
+  if (assigned?.body_id && assigned.body_id !== c.body_id) {
     return {
       text: `Wrong body for contract (need ${assigned.body_id})`,
       kind: "bad",

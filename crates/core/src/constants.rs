@@ -31,7 +31,10 @@ mod tests {
     #[test]
     fn career_pressure_eases_early_and_tightens_late() {
         assert!(career_pressure_interval_scale(0) > career_pressure_interval_scale(1));
-        assert_eq!(career_pressure_interval_scale(1), career_pressure_interval_scale(2));
+        assert_eq!(
+            career_pressure_interval_scale(1),
+            career_pressure_interval_scale(2)
+        );
         assert!(career_pressure_interval_scale(3) < career_pressure_interval_scale(2));
         assert!(career_pressure_interval_scale(5) < 1.0);
     }

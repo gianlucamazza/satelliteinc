@@ -128,12 +128,7 @@ impl MarketState {
     }
 
     /// Annotate marketplace offers with contest / claim / rush-bid fields.
-    pub fn decorate_offers(
-        &self,
-        offers: &mut [ContractOffer],
-        content: &GameContent,
-        now: f64,
-    ) {
+    pub fn decorate_offers(&self, offers: &mut [ContractOffer], content: &GameContent, now: f64) {
         for offer in offers.iter_mut() {
             offer.contested_by = None;
             offer.contest_ends_sim_seconds = None;
@@ -143,8 +138,7 @@ impl MarketState {
             if let Some(claim) = self.is_claimed(&offer.template_id, now) {
                 let name = content
                     .competitor(&claim.competitor_id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| claim.competitor_id.clone());
+                    .map_or_else(|| claim.competitor_id.clone(), |c| c.name.clone());
                 offer.claimed_by = Some(name);
                 offer.available = false;
                 continue;
@@ -153,13 +147,11 @@ impl MarketState {
             if let Some(contest) = self.contest_for(&offer.template_id) {
                 let name = content
                     .competitor(&contest.competitor_id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| contest.competitor_id.clone());
+                    .map_or_else(|| contest.competitor_id.clone(), |c| c.name.clone());
                 offer.contested_by = Some(name);
                 offer.contest_ends_sim_seconds = Some(contest.ends_at_sim_seconds);
                 if offer.available {
-                    offer.rush_bid_premium_usd =
-                        (offer.payout_usd * RUSH_PREMIUM_FRACTION).round();
+                    offer.rush_bid_premium_usd = (offer.payout_usd * RUSH_PREMIUM_FRACTION).round();
                 }
             }
         }

@@ -119,7 +119,7 @@ impl WeatherModifiers {
 
 /// Deterministic weighted pick from content using a day-bucket index.
 #[must_use]
-pub fn pick_event<'a>(defs: &'a [WorldEventDef], day_bucket: u64) -> Option<&'a WorldEventDef> {
+pub fn pick_event(defs: &[WorldEventDef], day_bucket: u64) -> Option<&WorldEventDef> {
     if defs.is_empty() {
         return None;
     }

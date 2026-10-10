@@ -15,8 +15,9 @@ pnpm run typecheck
 pnpm run lint
 pnpm run test
 pnpm run build
-# E2E: requires Chromium from `pnpm test:e2e:install` (cached after first run).
+# E2E: install Chromium if missing (cached after first local run).
 if [[ "${SKIP_E2E:-}" != "1" ]]; then
+  pnpm run test:e2e:install
   pnpm run test:e2e
 fi
 

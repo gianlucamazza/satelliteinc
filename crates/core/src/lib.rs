@@ -9,14 +9,14 @@ pub mod event;
 pub mod maneuver_ops;
 pub mod market;
 pub mod ops;
-pub mod prestige;
-pub mod weather;
 pub mod orbit;
+pub mod prestige;
 pub mod save;
 pub mod scenario;
 pub mod sim;
 pub mod snapshot;
 pub mod spacecraft;
+pub mod weather;
 
 pub use action::PlayerAction;
 pub use body::{BodyRegistry, CelestialBody};

@@ -11,7 +11,8 @@ authors = ["Gianluca Mazza"]
 repository = "https://github.com/gianlucamazza/satelliteinc"
 
 [workspace.dependencies]
-satelliteinc-core = { path = "crates/core" }
+# Version required: crates are publishable (no `publish = false`).
+satelliteinc-core = { path = "crates/core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -26,6 +27,7 @@ todo = "warn"
 # Deliberate allowances:
 float_cmp = "allow"                # bit-exact determinism tests compare with ==
 cast_possible_truncation = "allow" # tick/sample counts, bounded by construction
+cast_sign_loss = "allow"           # scores/day buckets, clamped or non-negative by construction
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"       # applied by hand where dropping is a bug

@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use crate::company::ActiveContract;
 use crate::company::{ContractOffer, GameMode, GameOutcome};
 use crate::market::CompetitorSnapshot;
-use crate::prestige::PrestigeSnapshot;
-use crate::weather::WorldEventSnapshot;
 use crate::ops::{AnomalyType, QueuedCommand};
 use crate::orbit::{KeplerElements, ReferenceSatellite};
+use crate::prestige::PrestigeSnapshot;
 use crate::spacecraft::{CraftPhase, HohmannPlanSnapshot, PayloadMode, PendingHohmann};
+use crate::weather::WorldEventSnapshot;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {

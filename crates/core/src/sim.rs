@@ -2,20 +2,16 @@ use crate::action::PlayerAction;
 use crate::body::{BodyRegistry, CelestialBody};
 use crate::clock::SimClock;
 use crate::company::{ActiveContract, GameMode, GameOutcome, can_purchase_tech};
-use crate::market::{
-    self, CompetitorSnapshot, MarketState, claim_cooldown_seconds,
-    contest_duration_seconds, market_enabled_for,
-};
-use crate::prestige;
-use crate::weather::{
-    self, ActiveWorldEvent, WeatherState, WorldEventSnapshot, pick_event,
-};
 use crate::constants::SECONDS_PER_DAY;
 use crate::content::GameContent;
 use crate::error::SimError;
 use crate::event::SimEvent;
 use crate::maneuver_ops::{
     complete_hohmann, execute_prograde_burn, preview_hohmann, start_hohmann,
+};
+use crate::market::{
+    self, CompetitorSnapshot, MarketState, claim_cooldown_seconds, contest_duration_seconds,
+    market_enabled_for,
 };
 use crate::ops::{
     ANOMALY_COOLDOWN_SECONDS, ActiveAnomaly, AnomalyType, CommandType, QueuedCommand,
@@ -26,11 +22,13 @@ use crate::orbit::{
     ReferenceSatellite, TlePropagator, at_apsis, circular_orbit, eci_position_km,
     eci_velocity_km_s, orbit_trail_samples, seconds_to_apsides,
 };
+use crate::prestige;
 use crate::snapshot::{
     ActiveContractSnapshot, BodySnapshot, CraftStationStatus, GamePhase, ProgramSnapshot, Snapshot,
     SpacecraftSnapshot, StationSnapshot, TransferPlannerSnapshot, TransferSnapshot,
 };
 use crate::spacecraft::{CraftId, CraftPhase, HohmannPlanSnapshot, PayloadMode, Spacecraft};
+use crate::weather::{self, ActiveWorldEvent, WeatherState, WorldEventSnapshot, pick_event};
 
 const STEP_DT_SECONDS: f64 = 1.0;
 const STARTING_CASH: f64 = 450_000.0;
@@ -98,11 +96,8 @@ impl SimState {
             GameMode::Campaign,
             &content,
         );
-        let market = MarketState::from_content(
-            &content,
-            market_enabled_for(company.game_mode, None),
-            0.0,
-        );
+        let market =
+            MarketState::from_content(&content, market_enabled_for(company.game_mode, None), 0.0);
         let weather = WeatherState::from_content(
             &content,
             WeatherState::weather_enabled_for(company.game_mode, None),
@@ -289,9 +284,7 @@ impl SimState {
         } else {
             station.bandwidth_mbps * body.dsn_bandwidth_factor * deep_space_comms_multiplier
         };
-        let wx = self
-            .weather
-            .modifiers(&self.content, &body.id, station.dsn);
+        let wx = self.weather.modifiers(&self.content, &body.id, station.dsn);
         base * wx.bandwidth_multiplier
     }
 
@@ -888,18 +881,11 @@ impl SimState {
                 };
                 self.company.on_mode_changed(&self.content);
                 let enabled = market_enabled_for(self.company.game_mode, None);
-                self.market = MarketState::from_content(
-                    &self.content,
-                    enabled,
-                    self.clock.sim_seconds,
-                );
-                let weather_on =
-                    WeatherState::weather_enabled_for(self.company.game_mode, None);
-                self.weather = WeatherState::from_content(
-                    &self.content,
-                    weather_on,
-                    self.clock.sim_seconds,
-                );
+                self.market =
+                    MarketState::from_content(&self.content, enabled, self.clock.sim_seconds);
+                let weather_on = WeatherState::weather_enabled_for(self.company.game_mode, None);
+                self.weather =
+                    WeatherState::from_content(&self.content, weather_on, self.clock.sim_seconds);
                 self.push_event(SimEvent::ActionApplied {
                     message: format!("Game mode: {:?}", self.company.game_mode),
                 });
@@ -1272,9 +1258,7 @@ impl SimState {
                         anomaly.label_override = match kind {
                             AnomalyType::PowerGlitch => flavor.power_glitch_label.clone(),
                             AnomalyType::CommsDropout => flavor.comms_dropout_label.clone(),
-                            AnomalyType::BufferCorruption => {
-                                flavor.buffer_corruption_label.clone()
-                            }
+                            AnomalyType::BufferCorruption => flavor.buffer_corruption_label.clone(),
                         };
                         if kind == AnomalyType::CommsDropout
                             && let Some(duration) = flavor.comms_dropout_duration_s
@@ -1290,8 +1274,7 @@ impl SimState {
                             .map_or(0.25, |f| f.buffer_corruption_fraction)
                             .clamp(0.05, 0.9);
                         craft.buffer_mb *= 1.0 - fraction;
-                        craft.anomaly_cooldown_until =
-                            sim_seconds + ANOMALY_COOLDOWN_SECONDS;
+                        craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
                         anomaly_events.push(SimEvent::AnomalyStarted {
                             craft_id,
                             kind,
@@ -1304,8 +1287,7 @@ impl SimState {
                         });
                     } else {
                         craft.active_anomaly = Some(anomaly);
-                        craft.anomaly_cooldown_until =
-                            sim_seconds + ANOMALY_COOLDOWN_SECONDS;
+                        craft.anomaly_cooldown_until = sim_seconds + ANOMALY_COOLDOWN_SECONDS;
                         anomaly_events.push(SimEvent::AnomalyStarted {
                             craft_id,
                             kind,
@@ -1479,8 +1461,7 @@ impl SimState {
                         kind: AnomalyType::CommsDropout,
                     });
                 } else if craft.active_anomaly.is_some() {
-                    msg = "Reboot complete — no comms fault to clear (wrong procedure)"
-                        .into();
+                    msg = "Reboot complete — no comms fault to clear (wrong procedure)".into();
                 } else {
                     msg = "Reboot complete — comms nominal".into();
                 }
@@ -1533,7 +1514,11 @@ impl SimState {
             .decorate_offers(&mut offers, &self.content, self.clock.sim_seconds);
         // Hide player-active templates (already accepted).
         for offer in &mut offers {
-            if self.company.contract_by_template(&offer.template_id).is_some() {
+            if self
+                .company
+                .contract_by_template(&offer.template_id)
+                .is_some()
+            {
                 offer.available = false;
             }
         }
@@ -1625,8 +1610,7 @@ impl SimState {
                 let name = self
                     .content
                     .world_event(&active.event_id)
-                    .map(|e| e.name.clone())
-                    .unwrap_or_else(|| active.event_id.clone());
+                    .map_or_else(|| active.event_id.clone(), |e| e.name.clone());
                 self.weather.active = None;
                 let pressure = crate::constants::career_pressure_interval_scale(
                     self.company.completed_programs.len(),
@@ -1643,9 +1627,8 @@ impl SimState {
         if now < self.weather.next_roll_sim_seconds {
             return;
         }
-        let pressure = crate::constants::career_pressure_interval_scale(
-            self.company.completed_programs.len(),
-        );
+        let pressure =
+            crate::constants::career_pressure_interval_scale(self.company.completed_programs.len());
         let day_bucket = (now / SECONDS_PER_DAY).floor() as u64;
         let Some(def) = pick_event(&self.content.world_events, day_bucket).cloned() else {
             self.weather.next_roll_sim_seconds =
@@ -1674,9 +1657,7 @@ impl SimState {
         }
         let now = self.clock.sim_seconds;
         // Expire cooldowns.
-        self.market
-            .claims
-            .retain(|c| c.available_again_at > now);
+        self.market.claims.retain(|c| c.available_again_at > now);
 
         // Resolve contests that have timed out → rival claims.
         let expired: Vec<_> = self
@@ -1709,8 +1690,7 @@ impl SimState {
             let name = self
                 .content
                 .competitor(&contest.competitor_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| contest.competitor_id.clone());
+                .map_or_else(|| contest.competitor_id.clone(), |c| c.name.clone());
             self.market.claims.push(market::RivalClaim {
                 contract_id: contest.contract_id.clone(),
                 competitor_id: contest.competitor_id.clone(),
@@ -1732,9 +1712,8 @@ impl SimState {
             if self.market.rivals[rival_idx].next_action_sim_seconds > now {
                 continue;
             }
-            let def = match self.content.competitor(&rival_id).cloned() {
-                Some(d) => d,
-                None => continue,
+            let Some(def) = self.content.competitor(&rival_id).cloned() else {
+                continue;
             };
             let pressure = crate::constants::career_pressure_interval_scale(
                 self.company.completed_programs.len(),
@@ -1781,14 +1760,13 @@ impl SimState {
         let mut offers = self.decorated_marketplace();
         offers.retain(eligible);
         offers.sort_by(|a, b| a.template_id.cmp(&b.template_id));
-        if !def.focus_bodies.is_empty() {
-            if let Some(id) = offers
+        if !def.focus_bodies.is_empty()
+            && let Some(id) = offers
                 .iter()
                 .find(|o| def.focus_bodies.iter().any(|b| b == &o.body_id))
                 .map(|o| o.template_id.clone())
-            {
-                return Some(id);
-            }
+        {
+            return Some(id);
         }
         offers.into_iter().next().map(|o| o.template_id)
     }

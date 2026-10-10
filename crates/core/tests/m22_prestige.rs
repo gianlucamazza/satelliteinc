@@ -1,8 +1,6 @@
 //! M22 agency prestige scoring and contested wins.
 
-use satelliteinc_core::{
-    SimState, action::PlayerAction, prestige::PrestigeRank,
-};
+use satelliteinc_core::{SimState, action::PlayerAction, prestige::PrestigeRank};
 
 mod common;
 use common::load_content;
@@ -13,7 +11,11 @@ fn prestige_starts_at_startup() {
     let p = sim.snapshot().prestige;
     assert_eq!(p.rank, PrestigeRank::Startup);
     // Starting cash + rep contribute to score, but stay below regional.
-    assert!(p.score < 100, "fresh company should still be Startup, got {}", p.score);
+    assert!(
+        p.score < 100,
+        "fresh company should still be Startup, got {}",
+        p.score
+    );
     assert!(!p.goals.is_empty());
 }
 
@@ -62,9 +64,5 @@ fn victory_bonus_applied() {
     sim.company.outcome = Some(satelliteinc_core::company::GameOutcome::Victory);
     let p = sim.snapshot().prestige;
     assert!(p.score >= 250);
-    assert!(
-        p.goals
-            .iter()
-            .any(|g| g.id == "grand_victory" && g.done)
-    );
+    assert!(p.goals.iter().any(|g| g.id == "grand_victory" && g.done));
 }

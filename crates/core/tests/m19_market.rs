@@ -1,8 +1,7 @@
 //! M19 competitor market: contests, claims, rush bids, sandbox silence.
 
 use satelliteinc_core::{
-    SimState, action::PlayerAction, company::GameMode,
-    market::RUSH_PREMIUM_FRACTION,
+    SimState, action::PlayerAction, company::GameMode, market::RUSH_PREMIUM_FRACTION,
 };
 
 mod common;
@@ -197,7 +196,11 @@ fn claimed_contract_returns_after_cooldown() {
         .clone();
     sim.market.contests[0].ends_at_sim_seconds = sim.clock.sim_seconds;
     step_once(&mut sim);
-    assert!(sim.market.is_claimed(&contract_id, sim.clock.sim_seconds).is_some());
+    assert!(
+        sim.market
+            .is_claimed(&contract_id, sim.clock.sim_seconds)
+            .is_some()
+    );
 
     // Expire cooldown.
     if let Some(claim) = sim
@@ -234,9 +237,11 @@ fn save_roundtrip_preserves_contest() {
     let save = sim.export_save();
     assert!(save.version >= 5);
     let json = save.to_json().unwrap();
-    let restored =
-        SimState::import_save(load_content(), satelliteinc_core::SaveGame::from_json(&json).unwrap())
-            .unwrap();
+    let restored = SimState::import_save(
+        load_content(),
+        satelliteinc_core::SaveGame::from_json(&json).unwrap(),
+    )
+    .unwrap();
     assert_eq!(restored.market.contests.len(), sim.market.contests.len());
     assert_eq!(
         restored.market.contests[0].contract_id,
