@@ -140,9 +140,18 @@ fn career_goals(
     content: &GameContent,
     contested_wins: u32,
 ) -> Vec<PrestigeGoal> {
-    let earth_done = company.completed_programs.iter().any(|p| p == "earth_program");
-    let moon_unlocked = company.unlocked_programs.iter().any(|p| p == "moon_program");
-    let mars_done = company.completed_programs.iter().any(|p| p == "mars_program");
+    let earth_done = company
+        .completed_programs
+        .iter()
+        .any(|p| p == "earth_program");
+    let moon_unlocked = company
+        .unlocked_programs
+        .iter()
+        .any(|p| p == "moon_program");
+    let mars_done = company
+        .completed_programs
+        .iter()
+        .any(|p| p == "mars_program");
     let programs_done = company.completed_programs.len();
     let total_programs = content.programs.len();
 
@@ -197,7 +206,10 @@ mod tests {
     #[test]
     fn ranks_ladder() {
         assert_eq!(PrestigeRank::from_score(0), PrestigeRank::Startup);
-        assert_eq!(PrestigeRank::from_score(100), PrestigeRank::RegionalOperator);
+        assert_eq!(
+            PrestigeRank::from_score(100),
+            PrestigeRank::RegionalOperator
+        );
         assert_eq!(PrestigeRank::from_score(1000), PrestigeRank::GrandAgency);
     }
 }

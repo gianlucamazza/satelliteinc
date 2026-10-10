@@ -161,18 +161,11 @@ fn ground_network_covers_career_bodies() {
         ("venus", "venus_relay"),
         ("jupiter", "jupiter_relay"),
     ] {
+        assert!(content.tech(tech).is_some(), "missing tech {tech}");
         assert!(
-            content.tech(tech).is_some(),
-            "missing tech {tech}"
-        );
-        assert!(
-            content
-                .ground_stations
-                .iter()
-                .any(|s| s.body_id == body && s.requires_tech.as_deref() == Some(tech)
-                    || (body == "moon"
-                        && s.body_id == "moon"
-                        && s.requires_tech.is_some())),
+            content.ground_stations.iter().any(|s| s.body_id == body
+                && s.requires_tech.as_deref() == Some(tech)
+                || (body == "moon" && s.body_id == "moon" && s.requires_tech.is_some())),
             "missing gated local dish on {body}"
         );
     }
@@ -205,7 +198,10 @@ fn launch_binds_reachable_preferred_station_not_content_first() {
         .downlink_station_id
         .as_deref()
         .expect("launch assigns a downlink station");
-    assert_ne!(dish, "svalbard", "must not default to first content station");
+    assert_ne!(
+        dish, "svalbard",
+        "must not default to first content station"
+    );
     // Sandbox unlocks lunar dish — preferred is local highest-bw (nearside 80).
     assert_eq!(
         dish, "lunar_nearside",
@@ -213,10 +209,7 @@ fn launch_binds_reachable_preferred_station_not_content_first() {
     );
     // Station must appear in reachable status list.
     assert!(
-        craft
-            .station_status
-            .iter()
-            .any(|s| s.station_id == dish),
+        craft.station_status.iter().any(|s| s.station_id == dish),
         "selected dish must be in station_status"
     );
 }

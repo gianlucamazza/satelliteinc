@@ -1,0 +1,5 @@
+# pnpm 11 requires an explicit allow-list for dependency build scripts.
+# esbuild (Vite) and @swc/core (typescript-eslint) ship native binaries.
+allowBuilds:
+  "@swc/core": true
+  esbuild: true

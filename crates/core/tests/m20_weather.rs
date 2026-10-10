@@ -1,7 +1,10 @@
 //! M20 world events: deterministic schedule, solar/bandwidth modifiers, save.
 
 use satelliteinc_core::{
-    SimState, action::PlayerAction, company::GameMode, constants::SECONDS_PER_DAY,
+    SimState,
+    action::PlayerAction,
+    company::GameMode,
+    constants::SECONDS_PER_DAY,
     weather::{ActiveWorldEvent, CHECK_INTERVAL_DAYS},
 };
 
@@ -63,9 +66,11 @@ fn event_starts_and_ends_with_events() {
     sim.weather.active.as_mut().unwrap().ends_at_sim_seconds = sim.clock.sim_seconds;
     step_once(&mut sim);
     let ended = sim.drain_events();
-    assert!(ended
-        .iter()
-        .any(|e| matches!(e, satelliteinc_core::SimEvent::WorldEventEnded { .. })));
+    assert!(
+        ended
+            .iter()
+            .any(|e| matches!(e, satelliteinc_core::SimEvent::WorldEventEnded { .. }))
+    );
     assert!(sim.weather.active.is_none());
     assert!(sim.snapshot().active_world_event.is_none());
 }
@@ -86,9 +91,7 @@ fn solar_storm_derates_earth_flux_path() {
         started_at_sim_seconds: sim.clock.sim_seconds,
         ends_at_sim_seconds: sim.clock.sim_seconds + storm.duration_days * SECONDS_PER_DAY,
     });
-    let wx = sim
-        .weather
-        .craft_modifiers(&sim.content, "earth");
+    let wx = sim.weather.craft_modifiers(&sim.content, "earth");
     assert!(
         (wx.solar_penalty - 0.55).abs() < 1e-9,
         "solar storm solar_penalty"
@@ -155,7 +158,11 @@ fn save_roundtrip_preserves_active_event() {
     )
     .unwrap();
     assert_eq!(
-        restored.weather.active.as_ref().map(|a| a.event_id.as_str()),
+        restored
+            .weather
+            .active
+            .as_ref()
+            .map(|a| a.event_id.as_str()),
         sim.weather.active.as_ref().map(|a| a.event_id.as_str())
     );
 }
@@ -175,5 +182,5 @@ fn mode_switch_resets_weather() {
 
 #[test]
 fn check_interval_constant_is_positive() {
-    assert!(CHECK_INTERVAL_DAYS > 0.0);
+    const { assert!(CHECK_INTERVAL_DAYS > 0.0) };
 }
