@@ -3,3 +3,11 @@
 allowBuilds:
   "@swc/core": true
   esbuild: true
+
+overrides:
+  postcss: ">=8.5.23"
+  source-map-js: ">=1.2.2"
+  brace-expansion: ">=5.0.12"
+  # vite-plugin-top-level-await@1.6.0 (latest) pins uuid@10.0.0 exactly.
+  # Force uuid 14+ so the GHSA is closed; verified against the wasm TLA build path.
+  uuid: ">=14.0.0"
