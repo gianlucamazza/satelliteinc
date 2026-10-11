@@ -18,6 +18,9 @@ updates:
         patterns:
           - "serde"
           - "serde_derive"
+      version-updates:
+        applies-to: version-updates
+        patterns: ['*']
 
   - package-ecosystem: npm
     directory: "/web"
@@ -35,3 +38,6 @@ updates:
         patterns:
           - "vitest"
           - "@vitest/*"
+      version-updates:
+        applies-to: version-updates
+        patterns: ['*']
