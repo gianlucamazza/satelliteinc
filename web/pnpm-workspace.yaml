@@ -5,9 +5,10 @@ allowBuilds:
   esbuild: true
 
 overrides:
+  # Transitives Dependabot security-update jobs could not bump (2026-10-10/11):
+  # source-map-js, uuid, brace-expansion, postcss. tinypool / @vitest/mocker
+  # are covered by vitest 5.0.3 (tinypool dropped, mocker 5.0.3).
   postcss: ">=8.5.23"
   source-map-js: ">=1.2.2"
   brace-expansion: ">=5.0.12"
-  # vite-plugin-top-level-await@1.6.0 (latest) pins uuid@10.0.0 exactly.
-  # Force uuid 14+ so the GHSA is closed; verified against the wasm TLA build path.
   uuid: ">=14.0.0"
