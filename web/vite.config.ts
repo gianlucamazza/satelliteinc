@@ -1,10 +1,9 @@
 import { defineConfig } from "vite";
 import wasm from "vite-plugin-wasm";
-import topLevelAwait from "vite-plugin-top-level-await";
 import { resolve } from "path";
 
 export default defineConfig({
-  plugins: [wasm(), topLevelAwait()],
+  plugins: [wasm()],
   server: {
     fs: {
       allow: [".."],
@@ -12,15 +11,19 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@wasm": resolve(__dirname, "../crates/wasm/pkg"),
+      "@wasm": resolve(import.meta.dirname, "../crates/wasm/pkg"),
     },
   },
   build: {
     target: "esnext",
-    rollupOptions: {
-      // three.js only changes on upgrades: keep it in its own chunk so
-      // returning players re-download just the app code.
-      output: { manualChunks: { three: ["three"] } },
+    // Vite 8 / Rolldown: TLA is native, so vite-plugin-top-level-await
+    // (require('rollup')) is gone. Rolldown only accepts a function here.
+    rolldownOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes("node_modules/three")) return "three";
+        },
+      },
     },
   },
 });
