@@ -27,6 +27,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # TypeScript 7.0 has no JS compiler API. typescript-eslint 8.x
+    # hard-fails (`versionMajor >= 7`). Support is tracked in
+    # typescript-eslint#10940 (experimental TS 7.1 IPC, not released).
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       typescript-eslint:
         applies-to: security-updates
